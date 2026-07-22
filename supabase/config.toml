@@ -1,0 +1,4 @@
+project_id = "journey-os"
+
+[functions.journey-api]
+verify_jwt = true

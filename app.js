@@ -32,7 +32,7 @@ const seed = {
   notifications: { daily: true, critical: true, weekend: true, dailyTime: "08:30", quiet: true },
   personalFeed: {
     page: 0,
-    engines: { news: true, finance: true, academic: true, youtube: true, rss: true, social: false },
+    engines: { news: true, finance: true, academic: true, youtube: true, rss: true, hackernews: true, social: false },
     interests: [
       { id: "interest-ai", label: "yapay zekâ ekonomisi", keywords: ["AI", "veri merkezi", "enerji"], intensity: 5, active: true },
       { id: "interest-power", label: "tarih ve güç", keywords: ["kurumlar", "siyaset", "tarih"], intensity: 3, active: true },
@@ -237,10 +237,47 @@ let feedTurnDirection = "";
 const app = document.querySelector("#app");
 const toast = document.querySelector("#toast");
 const modalRoot = document.querySelector("#modalRoot");
+const runtimeConfig = window.JOURNEY_CONFIG || {};
+const cloudEnabled = Boolean(runtimeConfig.supabaseUrl && runtimeConfig.supabasePublishableKey);
+let cloudHydrated = !cloudEnabled;
+let cloudSessionPromise;
+let cloudSaveTimer;
 
 function safeParse(value) { try { return JSON.parse(value || "null"); } catch { return null; } }
+async function cloudSession() {
+  if (!cloudEnabled) return null;
+  if (cloudSessionPromise) return cloudSessionPromise;
+  cloudSessionPromise = (async () => {
+    const storageKey = "journey-os-cloud-session";
+    let session = safeParse(localStorage.getItem(storageKey));
+    const headers = { apikey: runtimeConfig.supabasePublishableKey, authorization: `Bearer ${runtimeConfig.supabasePublishableKey}`, "content-type": "application/json" };
+    if (session?.access_token && Number(session.expires_at || 0) > Date.now() + 60_000) return session;
+    if (session?.refresh_token) {
+      const refreshed = await fetch(`${runtimeConfig.supabaseUrl}/auth/v1/token?grant_type=refresh_token`, { method: "POST", headers, body: JSON.stringify({ refresh_token: session.refresh_token }) });
+      if (refreshed.ok) session = await refreshed.json();
+    }
+    if (!session?.access_token || Number(session.expires_at || 0) <= Date.now() + 60_000) {
+      const created = await fetch(`${runtimeConfig.supabaseUrl}/auth/v1/signup`, { method: "POST", headers, body: JSON.stringify({ data: { app: "journey-os" } }) });
+      const payload = await created.json().catch(() => ({}));
+      if (!created.ok || !payload.access_token) throw new Error(payload.msg || payload.error_description || "Anonim Supabase oturumu açılamadı");
+      session = payload;
+    }
+    session.expires_at = Date.now() + Number(session.expires_in || 3600) * 1000;
+    localStorage.setItem(storageKey, JSON.stringify(session));
+    return session;
+  })().catch((error) => { cloudSessionPromise = null; throw error; });
+  return cloudSessionPromise;
+}
 async function apiRequest(path, options = {}) {
-  const response = await fetch(path, { ...options, headers: { "content-type": "application/json", ...(options.headers || {}) } });
+  let target = path;
+  const headers = { "content-type": "application/json", ...(options.headers || {}) };
+  if (cloudEnabled) {
+    const session = await cloudSession();
+    target = `${runtimeConfig.supabaseUrl}/functions/v1/journey-api${path.replace(/^\/api/, "")}`;
+    headers.apikey = runtimeConfig.supabasePublishableKey;
+    headers.authorization = `Bearer ${session.access_token}`;
+  }
+  const response = await fetch(target, { ...options, headers });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `Servis hatası (${response.status})`);
   return data;
@@ -262,7 +299,33 @@ function mergeStoredItems(items) {
   return seed.items.map((fresh) => ({ ...fresh, ...(items.find((old) => old.id === fresh.id) || {}) })).concat(items.filter((old) => !seed.items.some((fresh) => fresh.id === old.id)));
 }
 function escapeHtml(value = "") { return String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char])); }
-function persist() { localStorage.setItem("journey-os-state", JSON.stringify(state)); }
+function cloudStateSnapshot() {
+  const { researchReports, researchSchedules, ...snapshot } = state;
+  return snapshot;
+}
+function persist() {
+  localStorage.setItem("journey-os-state", JSON.stringify(state));
+  if (!cloudEnabled || !cloudHydrated) return;
+  clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = setTimeout(() => apiRequest("/api/state", { method: "PUT", body: JSON.stringify({ state: cloudStateSnapshot() }) }).catch((error) => console.warn("Bulut kaydı başarısız:", error.message)), 650);
+}
+async function hydrateCloudState() {
+  if (!cloudEnabled) return;
+  try {
+    const result = await apiRequest("/api/state");
+    if (result.state) {
+      Object.assign(state, result.state);
+      localStorage.setItem("journey-os-state", JSON.stringify(state));
+    }
+    cloudHydrated = true;
+    if (!result.state) persist();
+    render();
+  } catch (error) {
+    cloudHydrated = true;
+    console.warn("Journey OS yerel modda devam ediyor:", error.message);
+    showToast("Bulut bağlantısı kurulamadı; yerel veriler korunuyor");
+  }
+}
 function itemById(id) { return state.items.find((item) => item.id === id); }
 function journeyById(id) { return state.journeys.find((journey) => journey.id === id); }
 function formatDate() { return new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "long", year: "numeric" }).format(new Date()); }
@@ -494,7 +557,7 @@ function renderExploreResult(result, index) {
   return `<article class="research-card ${result.saved ? "is-saved" : ""}"><div class="result-number">0${index + 1}</div><div><div class="card-meta"><span class="dot"></span>${result.type} · ${result.source} · kaynak ${result.confidence}</div><h3>${result.title}</h3><p>${result.summary}</p><div class="why-box"><strong>Neden sana göre?</strong>${result.why}</div><div class="score-grid">${scoreBars(result.score)}</div><div class="actions"><button class="button ghost" data-research-skip="${index}">Geç</button><button class="button" data-research-save="${index}" ${result.saved ? "disabled" : ""}>${result.saved ? "Arşivde ✓" : "Arşive kaydet"}</button><button class="button primary" data-research-attach="${index}" ${result.attached ? "disabled" : ""}>${result.attached ? "Konuya eklendi ✓" : "Bir konuya bağla"}</button></div></div></article>`;
 }
 
-const feedEngineLabels = { news: "Haber", finance: "Finans", academic: "Akademi", youtube: "YouTube", rss: "RSS", social: "X / sosyal" };
+const feedEngineLabels = { news: "Haber", finance: "Finans", academic: "Akademi", youtube: "YouTube", rss: "RSS", hackernews: "Teknoloji", social: "X / sosyal" };
 
 function fallbackFeedItems() {
   return state.items.filter((item) => item.state !== "rejected").map((item, index) => ({
@@ -548,7 +611,7 @@ function renderFeedStory(item, index) {
   return `<button class="feed-story story-${index + 1}" data-feed-item="${escapeHtml(item.id)}" ${item.url ? "" : "disabled"}><div><span>${feedEngineLabels[item.engine] || item.engine}</span><em>%${item.score}</em></div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(item.source)} · ${item.readingMinutes || 4} dk</small></button>`;
 }
 
-function feedEngineIcon(engine) { return ({ news: "N", finance: "₺", academic: "A", youtube: "▶", rss: "R", social: "X" })[engine] || "•"; }
+function feedEngineIcon(engine) { return ({ news: "N", finance: "₺", academic: "A", youtube: "▶", rss: "R", hackernews: "H", social: "X" })[engine] || "•"; }
 function relativeFeedDate(value) { const hours = Math.max(0, Math.round((Date.now() - Date.parse(value)) / 3_600_000)); return hours < 1 ? "şimdi" : hours < 24 ? `${hours} sa önce` : `${Math.round(hours / 24)} gün önce`; }
 
 async function refreshPersonalFeed() {
@@ -898,3 +961,4 @@ window.addEventListener("hashchange", () => { const next = location.hash.slice(1
 document.addEventListener("keydown", (event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openPalette(); } if (event.key === "Escape") { closePalette(); closeModal(); } });
 
 setRoute(route);
+hydrateCloudState();
