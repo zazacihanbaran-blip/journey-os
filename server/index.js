@@ -2,6 +2,7 @@ import http from "node:http";
 import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildPersonalFeed } from "./feed.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataDirectory = path.join(root, "data");
@@ -15,6 +16,9 @@ const sourceRegistry = [
   { id: "crossref", label: "Crossref", kind: "academic", auth: false, enabled: true },
   { id: "yahoo-finance", label: "Yahoo Finance chart", kind: "market", auth: false, enabled: true },
   { id: "youtube-captions", label: "YouTube captions", kind: "video", auth: false, enabled: true },
+  { id: "personal-rss", label: "RSS / Atom", kind: "rss", auth: false, enabled: true },
+  { id: "google-news-rss", label: "Google News RSS", kind: "news", auth: false, enabled: true },
+  { id: "social-rss-bridge", label: "X / sosyal RSS köprüsü", kind: "social", auth: false, enabled: true },
   { id: "alpha-vantage", label: "Alpha Vantage", kind: "market", auth: true, enabled: Boolean(process.env.ALPHA_VANTAGE_API_KEY) }
 ];
 
@@ -135,6 +139,10 @@ async function handleApi(request, response, url) {
   if (request.method === "POST" && url.pathname === "/api/recommendations") {
     try { const input = await bodyJson(request); return json(response, 200, { items: await buildRecommendations(input), generatedAt: new Date().toISOString(), providers: ["OpenAlex", "Crossref"] }); } catch (error) { return json(response, 502, { error: error.message }); }
   }
+  if (request.method === "POST" && url.pathname === "/api/feed") {
+    try { const input = await bodyJson(request); return json(response, 200, await buildPersonalFeed(input)); }
+    catch (error) { return json(response, 502, { error: error.message }); }
+  }
   if (request.method === "POST" && url.pathname === "/api/videos/transcript") {
     try { const input = await bodyJson(request); return json(response, 200, await getTranscript(input.url)); } catch (error) { return json(response, 422, { error: error.message }); }
   }
@@ -168,4 +176,4 @@ const server = http.createServer(async (request, response) => {
 });
 server.listen(port, "127.0.0.1", () => console.log(`Journey OS running at http://localhost:${port}`));
 
-export { server, buildRecommendations, getPortfolio, videoIdFromUrl, nextRun };
+export { server, buildRecommendations, getPortfolio, videoIdFromUrl, nextRun, buildPersonalFeed };
