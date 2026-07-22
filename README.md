@@ -18,6 +18,12 @@ Ardından `http://localhost:4173` adresini açın. Sunucuyu kapatmak için termi
 
 ## İlk sürümde çalışanlar
 
+- İlgi alanlarına göre sıralanan kişisel “Gazetem” akışı
+- Google News RSS, OpenAlex, Yahoo Finance haberleri ve özel RSS / Atom kaynakları
+- YouTube kanal RSS'i ve kullanıcı tarafından sağlanan X / sosyal RSS köprüleri
+- Açılıp kapanabilen haber, finans, akademi, YouTube, RSS ve sosyal motorları
+- Fildişi, beyaz ve gece baskısı; yazı, yoğunluk ve sütun kişiselleştirmesi
+- Kâğıt kıvrımı ve ileri/geri sayfa çevirme hareketi
 - Bugün görünümü ve günlük tercih seçimi
 - İlgi yoğunluğuna göre düzenlenen kişisel konu rafı
 - Portföy tezleri, gelişmeler ve dönemsel fiyat grafikleri
@@ -50,6 +56,9 @@ Uygulamayı açtıktan sonra sağ üstteki profil düğmesine basın. Sayfanın 
 
 ## Gerçek servisler
 
+- Kişisel gazete, etkin motorları tek içerik biçiminde birleştirir ve ilgi yoğunluğuna göre puanlar.
+- Haberler Google News RSS üzerinden; özel kaynaklar güvenli HTTPS RSS / Atom adreslerinden alınır.
+- X doğrudan anahtarsız okunmaz; kullanıcı kendi RSS köprüsünü ekleyebilir. Repoya API anahtarı yazılmaz.
 - Akademik öneriler OpenAlex ve Crossref üzerinden alınır.
 - Portföy geçmişi Yahoo Finance chart verisinden alınır.
 - Video dökümü, YouTube videosunda erişilebilir altyazı varsa alınır.

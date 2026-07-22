@@ -30,6 +30,18 @@ const seed = {
     communication: { tone: "Açık ve doğal", detail: "Önce kısa özet", address: "Cihan diye hitap et" }
   },
   notifications: { daily: true, critical: true, weekend: true, dailyTime: "08:30", quiet: true },
+  personalFeed: {
+    page: 0,
+    engines: { news: true, finance: true, academic: true, youtube: true, rss: true, hackernews: true, social: false },
+    interests: [
+      { id: "interest-ai", label: "yapay zekâ ekonomisi", keywords: ["AI", "veri merkezi", "enerji"], intensity: 5, active: true },
+      { id: "interest-power", label: "tarih ve güç", keywords: ["kurumlar", "siyaset", "tarih"], intensity: 3, active: true },
+      { id: "interest-cinema", label: "sinema", keywords: ["film", "yönetmen"], intensity: 2, active: true }
+    ],
+    symbols: ["NVDA", "MSFT", "MP"],
+    sources: [],
+    appearance: { paper: "ivory", font: "editorial", density: "balanced", columns: 3, motion: true }
+  },
   memories: [
     { id: "m1", type: "Kalıcı tercih", text: "Clickbait ve yüzeysel içerikten hoşlanmıyor", status: "approved" },
     { id: "m2", type: "Aktif merak", text: "AI ekonomisi ve enerji altyapısı", status: "approved" },
@@ -192,6 +204,14 @@ const state = {
   ...seed, ...(stored || {}),
   profile: { ...seed.profile, ...(stored?.profile || {}) },
   notifications: { ...seed.notifications, ...(stored?.notifications || {}) },
+  personalFeed: {
+    ...seed.personalFeed, ...(stored?.personalFeed || {}),
+    engines: { ...seed.personalFeed.engines, ...(stored?.personalFeed?.engines || {}) },
+    appearance: { ...seed.personalFeed.appearance, ...(stored?.personalFeed?.appearance || {}) },
+    interests: stored?.personalFeed?.interests || seed.personalFeed.interests,
+    sources: stored?.personalFeed?.sources || seed.personalFeed.sources,
+    symbols: stored?.personalFeed?.symbols || seed.personalFeed.symbols
+  },
   videoJob: { ...seed.videoJob, ...(stored?.videoJob || {}) },
   exploreOptions: { ...seed.exploreOptions, ...(stored?.exploreOptions || {}) },
   recommendationSettings: { ...seed.recommendationSettings, ...(stored?.recommendationSettings || {}) },
@@ -212,13 +232,52 @@ let exploreSearched = false;
 let liveRecommendationState = { status: "idle", items: [], error: "", generatedAt: "" };
 let livePortfolio = {};
 let liveTranscriptSegments = [];
+let personalFeedState = { status: "idle", items: [], errors: [], generatedAt: "", activeEngines: [] };
+let feedTurnDirection = "";
 const app = document.querySelector("#app");
 const toast = document.querySelector("#toast");
 const modalRoot = document.querySelector("#modalRoot");
+const runtimeConfig = window.JOURNEY_CONFIG || {};
+const cloudEnabled = Boolean(runtimeConfig.supabaseUrl && runtimeConfig.supabasePublishableKey);
+let cloudHydrated = !cloudEnabled;
+let cloudSessionPromise;
+let cloudSaveTimer;
 
 function safeParse(value) { try { return JSON.parse(value || "null"); } catch { return null; } }
+async function cloudSession() {
+  if (!cloudEnabled) return null;
+  if (cloudSessionPromise) return cloudSessionPromise;
+  cloudSessionPromise = (async () => {
+    const storageKey = "journey-os-cloud-session";
+    let session = safeParse(localStorage.getItem(storageKey));
+    const headers = { apikey: runtimeConfig.supabasePublishableKey, authorization: `Bearer ${runtimeConfig.supabasePublishableKey}`, "content-type": "application/json" };
+    if (session?.access_token && Number(session.expires_at || 0) > Date.now() + 60_000) return session;
+    if (session?.refresh_token) {
+      const refreshed = await fetch(`${runtimeConfig.supabaseUrl}/auth/v1/token?grant_type=refresh_token`, { method: "POST", headers, body: JSON.stringify({ refresh_token: session.refresh_token }) });
+      if (refreshed.ok) session = await refreshed.json();
+    }
+    if (!session?.access_token || Number(session.expires_at || 0) <= Date.now() + 60_000) {
+      const created = await fetch(`${runtimeConfig.supabaseUrl}/auth/v1/signup`, { method: "POST", headers, body: JSON.stringify({ data: { app: "journey-os" } }) });
+      const payload = await created.json().catch(() => ({}));
+      if (!created.ok || !payload.access_token) throw new Error(payload.msg || payload.error_description || "Anonim Supabase oturumu açılamadı");
+      session = payload;
+    }
+    session.expires_at = Date.now() + Number(session.expires_in || 3600) * 1000;
+    localStorage.setItem(storageKey, JSON.stringify(session));
+    return session;
+  })().catch((error) => { cloudSessionPromise = null; throw error; });
+  return cloudSessionPromise;
+}
 async function apiRequest(path, options = {}) {
-  const response = await fetch(path, { ...options, headers: { "content-type": "application/json", ...(options.headers || {}) } });
+  let target = path;
+  const headers = { "content-type": "application/json", ...(options.headers || {}) };
+  if (cloudEnabled) {
+    const session = await cloudSession();
+    target = `${runtimeConfig.supabaseUrl}/functions/v1/journey-api${path.replace(/^\/api/, "")}`;
+    headers.apikey = runtimeConfig.supabasePublishableKey;
+    headers.authorization = `Bearer ${session.access_token}`;
+  }
+  const response = await fetch(target, { ...options, headers });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `Servis hatası (${response.status})`);
   return data;
@@ -240,7 +299,33 @@ function mergeStoredItems(items) {
   return seed.items.map((fresh) => ({ ...fresh, ...(items.find((old) => old.id === fresh.id) || {}) })).concat(items.filter((old) => !seed.items.some((fresh) => fresh.id === old.id)));
 }
 function escapeHtml(value = "") { return String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char])); }
-function persist() { localStorage.setItem("journey-os-state", JSON.stringify(state)); }
+function cloudStateSnapshot() {
+  const { researchReports, researchSchedules, ...snapshot } = state;
+  return snapshot;
+}
+function persist() {
+  localStorage.setItem("journey-os-state", JSON.stringify(state));
+  if (!cloudEnabled || !cloudHydrated) return;
+  clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = setTimeout(() => apiRequest("/api/state", { method: "PUT", body: JSON.stringify({ state: cloudStateSnapshot() }) }).catch((error) => console.warn("Bulut kaydı başarısız:", error.message)), 650);
+}
+async function hydrateCloudState() {
+  if (!cloudEnabled) return;
+  try {
+    const result = await apiRequest("/api/state");
+    if (result.state) {
+      Object.assign(state, result.state);
+      localStorage.setItem("journey-os-state", JSON.stringify(state));
+    }
+    cloudHydrated = true;
+    if (!result.state) persist();
+    render();
+  } catch (error) {
+    cloudHydrated = true;
+    console.warn("Journey OS yerel modda devam ediyor:", error.message);
+    showToast("Bulut bağlantısı kurulamadı; yerel veriler korunuyor");
+  }
+}
 function itemById(id) { return state.items.find((item) => item.id === id); }
 function journeyById(id) { return state.journeys.find((journey) => journey.id === id); }
 function formatDate() { return new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "long", year: "numeric" }).format(new Date()); }
@@ -253,11 +338,12 @@ function setRoute(next) {
   document.querySelectorAll("[data-route]").forEach((el) => el.classList.toggle("is-active", el.dataset.route === next));
   render(); window.scrollTo({ top: 0, behavior: "smooth" }); requestAnimationFrame(() => app.focus({ preventScroll: true }));
   if (next === "recommendations" && liveRecommendationState.status === "idle") refreshLiveRecommendations();
+  if (next === "feed" && personalFeedState.status === "idle") refreshPersonalFeed();
   if (next === "portfolio" && !livePortfolio[state.activeTicker]) refreshLivePortfolio(state.activeTicker);
   if (next === "profile") refreshBackendSchedules();
 }
 function render() {
-  const views = { today: renderToday, portfolio: renderPortfolio, video: renderVideo, academic: renderAcademic, recommendations: renderRecommendations, topics: renderTopics, journey: renderTopics, library: renderLibrary, explore: renderExplore, profile: renderProfile };
+  const views = { today: renderToday, feed: renderPersonalFeed, portfolio: renderPortfolio, video: renderVideo, academic: renderAcademic, recommendations: renderRecommendations, topics: renderTopics, journey: renderTopics, library: renderLibrary, explore: renderExplore, profile: renderProfile };
   app.innerHTML = (views[route] || renderToday)(); bindViewEvents();
 }
 
@@ -471,6 +557,84 @@ function renderExploreResult(result, index) {
   return `<article class="research-card ${result.saved ? "is-saved" : ""}"><div class="result-number">0${index + 1}</div><div><div class="card-meta"><span class="dot"></span>${result.type} · ${result.source} · kaynak ${result.confidence}</div><h3>${result.title}</h3><p>${result.summary}</p><div class="why-box"><strong>Neden sana göre?</strong>${result.why}</div><div class="score-grid">${scoreBars(result.score)}</div><div class="actions"><button class="button ghost" data-research-skip="${index}">Geç</button><button class="button" data-research-save="${index}" ${result.saved ? "disabled" : ""}>${result.saved ? "Arşivde ✓" : "Arşive kaydet"}</button><button class="button primary" data-research-attach="${index}" ${result.attached ? "disabled" : ""}>${result.attached ? "Konuya eklendi ✓" : "Bir konuya bağla"}</button></div></div></article>`;
 }
 
+const feedEngineLabels = { news: "Haber", finance: "Finans", academic: "Akademi", youtube: "YouTube", rss: "RSS", hackernews: "Teknoloji", social: "X / sosyal" };
+
+function fallbackFeedItems() {
+  return state.items.filter((item) => item.state !== "rejected").map((item, index) => ({
+    id: `fallback-${item.id}`, engine: item.type === "Video" ? "youtube" : item.type === "Piyasa notu" ? "finance" : item.type === "Makale" || item.type === "Rapor" ? "academic" : "rss",
+    source: item.source, title: item.title, summary: item.summary, url: "", published: new Date(Date.now() - index * 3_600_000).toISOString(), score: averageScore(item.score), reason: `${item.journey} konunla eşleşiyor.`, readingMinutes: Number.parseInt(item.time) || 5
+  }));
+}
+
+function feedEditionItems() {
+  const items = personalFeedState.items.length ? personalFeedState.items : fallbackFeedItems();
+  const pageSize = state.personalFeed.appearance.density === "compact" ? 8 : state.personalFeed.appearance.density === "calm" ? 4 : 6;
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  state.personalFeed.page = Math.min(state.personalFeed.page, pageCount - 1);
+  return { items, pageSize, pageCount, visible: items.slice(state.personalFeed.page * pageSize, (state.personalFeed.page + 1) * pageSize) };
+}
+
+function renderPersonalFeed() {
+  const config = state.personalFeed;
+  const edition = feedEditionItems();
+  const generated = personalFeedState.generatedAt ? new Date(personalFeedState.generatedAt).toLocaleString("tr-TR", { hour: "2-digit", minute: "2-digit" }) : "yerel seçki";
+  const activeCount = Object.values(config.engines).filter(Boolean).length;
+  const lead = edition.visible[0];
+  return `<section class="page personal-feed-page" data-paper="${config.appearance.paper}" data-feed-font="${config.appearance.font}" style="--feed-columns:${config.appearance.columns}">
+    <header class="feed-hero"><div><p class="eyebrow">Kişisel gazeten</p><h1 class="page-title">Takip ettiğin dünya,<br>senin baskında.</h1><p class="page-copy">Akademi, finans, haber, YouTube, X köprüleri ve eklediğin RSS kaynakları aynı akışta; sıralama yalnızca seçtiğin ilgi alanlarına göre.</p></div><div class="feed-health"><span class="red-signal"></span><strong>${activeCount} motor açık</strong><small>${edition.items.length} içerik · ${generated}</small><button class="button" data-feed-refresh ${personalFeedState.status === "loading" ? "disabled" : ""}>${personalFeedState.status === "loading" ? "Kaynaklar okunuyor…" : "Yeni baskı hazırla"}</button></div></header>
+    <div class="feed-workspace">
+      <main class="newspaper-stage ${feedTurnDirection ? `is-turning-${feedTurnDirection}` : ""}">
+        <article class="newspaper-sheet">
+          <header class="newspaper-masthead"><span>JOURNEY</span><div><strong>KİŞİSEL BASKI</strong><small>${formatDate()} · Sayı ${String(state.personalFeed.page + 1).padStart(2, "0")}</small></div><span>OS</span></header>
+          <div class="newspaper-rule"><span>${config.interests.filter((item) => item.active).slice(0, 4).map((item) => item.label).join(" · ") || "İlgi alanı ekle"}</span><em>${edition.pageCount} sayfa</em></div>
+          ${personalFeedState.status === "error" ? `<section class="feed-empty"><h2>Kaynaklara ulaşamadım.</h2><p>${escapeHtml(personalFeedState.error)}</p><button class="button" data-feed-refresh>Tekrar dene</button></section>` : lead ? `<section class="edition-layout">
+            <button class="lead-story" data-feed-item="${escapeHtml(lead.id)}" ${lead.url ? "" : "disabled"}><div class="story-kicker">${feedEngineLabels[lead.engine] || lead.engine} · ${escapeHtml(lead.source)}</div><h2>${escapeHtml(lead.title)}</h2><p>${escapeHtml(lead.summary)}</p><div class="story-footer"><span>%${lead.score} eşleşme</span><span>${lead.readingMinutes || 4} dk</span><span>${lead.published ? relativeFeedDate(lead.published) : ""}</span></div><small>${escapeHtml(lead.reason || "")}</small></button>
+            <div class="edition-columns">${edition.visible.slice(1).map((item, index) => renderFeedStory(item, index)).join("")}</div>
+          </section>` : `<section class="feed-empty"><h2>Bu baskıda içerik yok.</h2><p>En az bir motoru aç veya yeni bir RSS kaynağı ekle.</p></section>`}
+          <footer class="newspaper-footer"><span>Kaynaklar otomatik özetlenir; asıl içerik her zaman kaynak sitesinde doğrulanır.</span><strong>${state.personalFeed.page + 1} / ${edition.pageCount}</strong></footer>
+          <i class="paper-curl" aria-hidden="true"></i>
+        </article>
+        <div class="page-turn-controls"><button class="paper-handle previous" data-feed-page="prev" ${state.personalFeed.page === 0 ? "disabled" : ""}><span>←</span><strong>Önceki sayfa</strong></button><div class="page-dots">${Array.from({ length: Math.min(edition.pageCount, 8) }, (_, index) => `<button data-feed-page-index="${index}" class="${index === state.personalFeed.page ? "is-active" : ""}" aria-label="${index + 1}. sayfa"></button>`).join("")}</div><button class="paper-handle next" data-feed-page="next" ${state.personalFeed.page >= edition.pageCount - 1 ? "disabled" : ""}><strong>Sayfayı çevir</strong><span>→</span></button></div>
+      </main>
+      <aside class="feed-studio">
+        <div class="studio-heading"><span>Baskı masası</span><h2>Gazeteni kur</h2><p>İstemediğin motoru kapat. Kaynağı, konuyu ve görünümü sen belirle.</p></div>
+        <section class="studio-block"><div class="studio-title"><strong>Motorlar</strong><small>${activeCount} / ${Object.keys(config.engines).length}</small></div><div class="engine-switches">${Object.entries(config.engines).map(([engine, enabled]) => `<label><span><i>${feedEngineIcon(engine)}</i><b>${feedEngineLabels[engine]}</b></span><input type="checkbox" data-feed-engine="${engine}" ${enabled ? "checked" : ""}><em></em></label>`).join("")}</div><p class="studio-note">X doğrudan anahtarsız okunmaz; kendi RSS köprünü “X / sosyal” türünde ekleyebilirsin.</p></section>
+        <section class="studio-block"><div class="studio-title"><strong>İlgi alanların</strong><small>kırmızı yoğunluk</small></div><div class="interest-list">${config.interests.map((interest) => `<div class="interest-chip ${interest.active ? "" : "is-off"}"><button data-feed-interest-toggle="${interest.id}"><i style="--intensity:${interest.intensity}"></i><span>${escapeHtml(interest.label)}</span></button><button data-feed-interest-remove="${interest.id}" aria-label="Kaldır">×</button></div>`).join("")}</div><form id="feedInterestForm" class="inline-studio-form"><input name="label" required placeholder="Örn. iklim teknolojileri"><select name="intensity"><option value="5">Sık</option><option value="3">Dengeli</option><option value="1">Yalnız önemliyse</option></select><button>+</button></form></section>
+        <section class="studio-block"><div class="studio-title"><strong>RSS ve kanal kaynakları</strong><small>${config.sources.length} özel kaynak</small></div><div class="source-mini-list">${config.sources.map((source) => `<div><span>${feedEngineLabels[source.kind] || "RSS"}</span><strong>${escapeHtml(source.label)}</strong><button data-feed-source-remove="${source.id}" aria-label="Kaynağı kaldır">×</button></div>`).join("") || `<p>Henüz özel kaynak eklemedin.</p>`}</div><form id="feedSourceForm" class="source-studio-form"><label>Ad<input name="label" required placeholder="Örn. Favori kanalım"></label><label>Tür<select name="kind"><option value="rss">RSS</option><option value="youtube">YouTube RSS</option><option value="social">X / sosyal RSS</option><option value="news">Haber</option></select></label><label class="source-url">HTTPS RSS / Atom adresi<input name="url" type="url" required placeholder="https://…/feed.xml"></label><button class="button">Kaynağı ekle</button><small class="form-message" data-feed-source-message>Yalnızca genel HTTPS adresleri kabul edilir.</small></form></section>
+        <section class="studio-block appearance-studio"><div class="studio-title"><strong>Görünüm</strong><small>anında değişir</small></div><label>Kâğıt<select data-feed-appearance="paper"><option value="ivory" ${config.appearance.paper === "ivory" ? "selected" : ""}>Fildişi</option><option value="white" ${config.appearance.paper === "white" ? "selected" : ""}>Beyaz</option><option value="night" ${config.appearance.paper === "night" ? "selected" : ""}>Gece baskısı</option></select></label><label>Yazı<select data-feed-appearance="font"><option value="editorial" ${config.appearance.font === "editorial" ? "selected" : ""}>Editoryal</option><option value="modern" ${config.appearance.font === "modern" ? "selected" : ""}>Modern</option></select></label><label>Yoğunluk<select data-feed-appearance="density"><option value="calm" ${config.appearance.density === "calm" ? "selected" : ""}>Sakin</option><option value="balanced" ${config.appearance.density === "balanced" ? "selected" : ""}>Dengeli</option><option value="compact" ${config.appearance.density === "compact" ? "selected" : ""}>Yoğun</option></select></label><label>Sütun<select data-feed-appearance="columns"><option value="2" ${Number(config.appearance.columns) === 2 ? "selected" : ""}>2</option><option value="3" ${Number(config.appearance.columns) === 3 ? "selected" : ""}>3</option><option value="4" ${Number(config.appearance.columns) === 4 ? "selected" : ""}>4</option></select></label><label class="motion-toggle"><span>Sayfa çevirme efekti</span><input type="checkbox" data-feed-motion ${config.appearance.motion ? "checked" : ""}><i></i></label></section>
+      </aside>
+    </div>
+  </section>`;
+}
+
+function renderFeedStory(item, index) {
+  return `<button class="feed-story story-${index + 1}" data-feed-item="${escapeHtml(item.id)}" ${item.url ? "" : "disabled"}><div><span>${feedEngineLabels[item.engine] || item.engine}</span><em>%${item.score}</em></div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(item.source)} · ${item.readingMinutes || 4} dk</small></button>`;
+}
+
+function feedEngineIcon(engine) { return ({ news: "N", finance: "₺", academic: "A", youtube: "▶", rss: "R", hackernews: "H", social: "X" })[engine] || "•"; }
+function relativeFeedDate(value) { const hours = Math.max(0, Math.round((Date.now() - Date.parse(value)) / 3_600_000)); return hours < 1 ? "şimdi" : hours < 24 ? `${hours} sa önce` : `${Math.round(hours / 24)} gün önce`; }
+
+async function refreshPersonalFeed() {
+  personalFeedState = { ...personalFeedState, status: "loading", error: "" };
+  if (route === "feed") render();
+  try {
+    const payload = { interests: state.personalFeed.interests, engines: state.personalFeed.engines, sources: state.personalFeed.sources, symbols: state.personalFeed.symbols };
+    const data = await apiRequest("/api/feed", { method: "POST", body: JSON.stringify(payload) });
+    personalFeedState = { status: "ready", items: data.items || [], errors: data.errors || [], generatedAt: data.generatedAt, activeEngines: data.activeEngines || [], error: "" };
+    state.personalFeed.page = 0; persist();
+  } catch (error) { personalFeedState = { ...personalFeedState, status: "error", error: error.message }; }
+  if (route === "feed") render();
+}
+
+function turnFeedPage(nextPage, direction) {
+  const edition = feedEditionItems();
+  const page = Math.max(0, Math.min(edition.pageCount - 1, nextPage));
+  if (page === state.personalFeed.page) return;
+  feedTurnDirection = state.personalFeed.appearance.motion ? direction : "";
+  state.personalFeed.page = page; persist(); render();
+  if (feedTurnDirection) setTimeout(() => { feedTurnDirection = ""; if (route === "feed") render(); }, 520);
+}
+
 function renderProfile() {
   const groups = [["interests", "Merak ettiklerin"], ["grammar", "Sevdiğin anlatım"], ["negatives", "Görmek istemediklerin"]];
   return `<section class="page">
@@ -602,6 +766,18 @@ function runTestRoute(value) {
 }
 
 function bindViewEvents() {
+  document.querySelectorAll("[data-feed-refresh]").forEach((button) => button.addEventListener("click", refreshPersonalFeed));
+  document.querySelectorAll("[data-feed-page]").forEach((button) => button.addEventListener("click", () => turnFeedPage(state.personalFeed.page + (button.dataset.feedPage === "next" ? 1 : -1), button.dataset.feedPage)));
+  document.querySelectorAll("[data-feed-page-index]").forEach((button) => button.addEventListener("click", () => turnFeedPage(Number(button.dataset.feedPageIndex), Number(button.dataset.feedPageIndex) > state.personalFeed.page ? "next" : "prev")));
+  document.querySelectorAll("[data-feed-item]").forEach((button) => button.addEventListener("click", () => { const item = [...personalFeedState.items, ...fallbackFeedItems()].find((entry) => entry.id === button.dataset.feedItem); if (item?.url) window.open(item.url, "_blank", "noopener,noreferrer"); }));
+  document.querySelectorAll("[data-feed-engine]").forEach((input) => input.addEventListener("change", () => { state.personalFeed.engines[input.dataset.feedEngine] = input.checked; state.personalFeed.page = 0; persist(); render(); refreshPersonalFeed(); }));
+  document.querySelectorAll("[data-feed-interest-toggle]").forEach((button) => button.addEventListener("click", () => { const interest = state.personalFeed.interests.find((item) => item.id === button.dataset.feedInterestToggle); if (!interest) return; interest.active = !interest.active; persist(); render(); refreshPersonalFeed(); }));
+  document.querySelectorAll("[data-feed-interest-remove]").forEach((button) => button.addEventListener("click", () => { state.personalFeed.interests = state.personalFeed.interests.filter((item) => item.id !== button.dataset.feedInterestRemove); persist(); render(); refreshPersonalFeed(); }));
+  document.querySelector("#feedInterestForm")?.addEventListener("submit", (event) => { event.preventDefault(); const data = new FormData(event.currentTarget); const label = data.get("label").trim(); if (!label) return; state.personalFeed.interests.push({ id: `interest-${Date.now()}`, label, keywords: label.split(/[,\s]+/).filter((word) => word.length > 2), intensity: Number(data.get("intensity")), active: true }); persist(); render(); refreshPersonalFeed(); });
+  document.querySelectorAll("[data-feed-source-remove]").forEach((button) => button.addEventListener("click", () => { state.personalFeed.sources = state.personalFeed.sources.filter((item) => item.id !== button.dataset.feedSourceRemove); persist(); render(); refreshPersonalFeed(); }));
+  document.querySelector("#feedSourceForm")?.addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); const message = form.querySelector("[data-feed-source-message]"); try { const url = new URL(data.get("url")); if (url.protocol !== "https:") throw new Error("Kaynak HTTPS ile başlamalı."); state.personalFeed.sources.push({ id: `source-${Date.now()}`, label: data.get("label").trim(), kind: data.get("kind"), url: url.href, enabled: true }); persist(); render(); await refreshPersonalFeed(); showToast("Yeni kaynak baskıya eklendi"); } catch (error) { message.textContent = error.message; message.classList.add("is-error"); } });
+  document.querySelectorAll("[data-feed-appearance]").forEach((select) => select.addEventListener("change", () => { const key = select.dataset.feedAppearance; state.personalFeed.appearance[key] = key === "columns" ? Number(select.value) : select.value; state.personalFeed.page = 0; persist(); render(); }));
+  document.querySelector("[data-feed-motion]")?.addEventListener("change", (event) => { state.personalFeed.appearance.motion = event.target.checked; persist(); });
   document.querySelectorAll("[data-ticker]").forEach((button) => button.addEventListener("click", () => { state.activeTicker = button.dataset.ticker; state.portfolioPoint = 11; persist(); render(); if (!livePortfolio[state.activeTicker]) refreshLivePortfolio(state.activeTicker); }));
   document.querySelectorAll("[data-range]").forEach((button) => button.addEventListener("click", () => { state.portfolioRange = button.dataset.range; persist(); render(); }));
   document.querySelectorAll("[data-portfolio-point]").forEach((button) => button.addEventListener("click", () => { state.portfolioPoint = Number(button.dataset.portfolioPoint); persist(); render(); }));
@@ -785,3 +961,4 @@ window.addEventListener("hashchange", () => { const next = location.hash.slice(1
 document.addEventListener("keydown", (event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openPalette(); } if (event.key === "Escape") { closePalette(); closeModal(); } });
 
 setRoute(route);
+hydrateCloudState();
