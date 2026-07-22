@@ -1,0 +1,27 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+const live = process.env.LIVE_TESTS === "1";
+process.env.PORT = "0";
+const { server } = await import("../server/index.js");
+await new Promise((resolve) => server.listening ? resolve() : server.once("listening", resolve));
+const base = `http://127.0.0.1:${server.address().port}`;
+
+test.after(() => server.close());
+
+test("canlı akademik kaynaklardan öneri üretir", { skip: !live }, async () => {
+  const response = await fetch(`${base}/api/recommendations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query: "artificial intelligence energy economics", settings: { novelty: 65 } }) });
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.ok(data.items.length > 0);
+  assert.ok(data.items[0].title);
+});
+
+test("canlı piyasa geçmişini getirir", { skip: !live }, async () => {
+  const response = await fetch(`${base}/api/portfolio/NVDA`);
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.equal(data.symbol, "NVDA");
+  assert.ok(data.price > 0);
+  assert.ok(data.points.length > 20);
+});

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f2eddf" />
+    <meta
+      name="description"
+      content="Journey OS - kişisel medya, araştırma ve yaşam yolculuğu sistemi"
+    />
+    <title>Journey OS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="#today" data-route="today" aria-label="Journey OS ana sayfa">
+        <span class="brand-mark">J</span>
+        <span>Journey OS</span>
+      </a>
+
+      <nav class="main-nav" aria-label="Ana navigasyon">
+        <button class="nav-link is-active" data-route="today">Bugün</button>
+        <button class="nav-link" data-route="portfolio">Portföyüm</button>
+        <button class="nav-link" data-route="video">Videolar</button>
+        <button class="nav-link" data-route="academic">Okumalar</button>
+        <button class="nav-link" data-route="recommendations">Seçkiler</button>
+        <button class="nav-link" data-route="topics">Konularım</button>
+        <button class="nav-link" data-route="library">Arşiv</button>
+        <button class="nav-link" data-route="explore">Keşfet</button>
+      </nav>
+
+      <div class="top-actions">
+        <button class="icon-button" id="searchButton" aria-label="Ara" title="Ara">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+        </button>
+        <button class="avatar" id="profileButton" aria-label="Profili aç">C</button>
+      </div>
+    </header>
+
+    <main id="app" tabindex="-1"></main>
+
+    <div class="command-palette" id="commandPalette" hidden>
+      <button class="palette-backdrop" data-close-palette aria-label="Aramayı kapat"></button>
+      <section class="palette-panel" role="dialog" aria-modal="true" aria-label="Journey OS içinde ara">
+        <div class="palette-input-wrap">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+          <input id="globalSearch" type="search" placeholder="İçerik, konu veya not ara..." autocomplete="off" />
+          <kbd>Esc</kbd>
+        </div>
+        <div id="searchResults" class="search-results"></div>
+      </section>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <div id="modalRoot"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

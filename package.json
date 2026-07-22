@@ -1,0 +1,14 @@
+{
+  "name": "journey-os",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Kaynak odaklı kişisel araştırma, portföy ve öğrenme sistemi",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server/index.js",
+    "start": "node server/index.js",
+    "check": "node --check app.js && node --check server/index.js && node --test tests/*.test.js"
+  },
+  "engines": { "node": ">=20" },
+  "license": "MIT"
+}
