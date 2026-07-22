@@ -66,3 +66,7 @@ create index if not exists feed_sources_user_id_idx on public.feed_sources(user_
 create index if not exists saved_items_user_id_idx on public.saved_items(user_id, created_at desc);
 create index if not exists research_schedules_due_idx on public.research_schedules(enabled, next_run);
 create index if not exists research_reports_user_id_idx on public.research_reports(user_id, created_at desc);
+
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on table public.user_state, public.feed_sources,
+  public.saved_items, public.research_schedules, public.research_reports to authenticated;
