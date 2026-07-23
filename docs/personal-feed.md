@@ -7,9 +7,14 @@
 - `news`: İlgi alanı sorgularıyla Google News RSS
 - `finance`: İzlenen semboller için Yahoo Finance haber araması
 - `academic`: OpenAlex akademik çalışmaları
-- `youtube`: Kullanıcının eklediği YouTube kanal RSS adresleri
-- `rss`: Genel RSS / Atom kaynakları
-- `social`: Kullanıcının eklediği X veya sosyal ağ RSS köprüsü
+- `youtube`: Two Minute Papers ve Computerphile başlangıç kanalları; kullanıcının eklediği kanal RSS adresleriyle genişler
+- `rss`: Nature ve Ars Technica başlangıç akışları; özel RSS / Atom kaynaklarıyla genişler
+- `hackernews`: Hacker News güncel teknoloji bağlantıları
+- `social`: Kullanıcının eklediği X veya sosyal ağ RSS köprüsü; kaynak yoksa motor kurulum gerektiğini bildirir
+
+## Motor sağlığı
+
+Her motor API yanıtında `ready`, `setup`, `empty`, `error`, `off` durumlarından birini; ürettiği içerik sayısını ve kullanıcıya gösterilecek kısa açıklamayı döndürür. Arayüz yalnızca gerçekten veri getiren motorları “çalışıyor” sayar.
 
 ## Kişiselleştirme
 

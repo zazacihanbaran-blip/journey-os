@@ -6,6 +6,16 @@ const cors = {
   "access-control-allow-methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
 };
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { ...cors, "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+const defaultFeedSources = {
+  youtube: [
+    { label: "Two Minute Papers", kind: "youtube", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCbfYPyITQ-7l4upoX8nvctg" },
+    { label: "Computerphile", kind: "youtube", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC9-y-6csu5WGm29I7JiwpnA" },
+  ],
+  rss: [
+    { label: "Nature", kind: "rss", url: "https://www.nature.com/nature.rss" },
+    { label: "Ars Technica", kind: "rss", url: "https://feeds.arstechnica.com/arstechnica/index" },
+  ],
+};
 const clean = (value = "") => decode(String(value)).replace(/<!\[CDATA\[|\]\]>/g, "").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 const decode = (value = "") => value.replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))).replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(Number.parseInt(n, 16))).replace(/&(amp|quot|apos|lt|gt|nbsp);/gi, (_, n) => ({ amp: "&", quot: '"', apos: "'", lt: "<", gt: ">", nbsp: " " } as Record<string, string>)[n.toLowerCase()] || _);
 const tag = (block: string, names: string[]) => names.map((name) => block.match(new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, "i"))?.[1]).find(Boolean) || "";
@@ -43,25 +53,56 @@ function score(item: Record<string, unknown>, interests: Array<Record<string, un
   const interestScore = matching.reduce((sum, interest) => sum + Number(interest.intensity || 3) * 8, 0);
   const ageHours = item.published ? Math.max(0, (Date.now() - Date.parse(String(item.published))) / 3_600_000) : 168;
   const freshness = Math.max(0, 34 - Math.log2(ageHours + 1) * 5);
-  const trust = ({ academic: 24, finance: 21, youtube: 17, news: 16, social: 10, rss: 14 } as Record<string, number>)[String(item.engine)] || 12;
+  const trust = ({ academic: 24, finance: 21, youtube: 17, news: 16, hackernews: 15, social: 10, rss: 14 } as Record<string, number>)[String(item.engine)] || 12;
   return { ...item, score: Math.round(Math.min(100, 16 + interestScore + freshness + trust)), matchedInterests: matching.map((i) => i.label), reason: matching.length ? `${matching.slice(0, 2).map((i) => i.label).join(" ve ")} ilgi alanınla eşleşiyor.` : "Seçtiğin kaynaklardan güncel bir içerik." };
+}
+async function loadFeedSources(sources: Array<Record<string, string>>) {
+  const results = await Promise.allSettled(sources.map(async (source) => {
+    const url = checkedUrl(source.url);
+    return parseFeed(await getText(url.href), { ...source, url: url.href });
+  }));
+  const items = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+  const failures = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
+  if (!items.length && failures.length) throw new Error(failures[0].reason?.message || "Kaynak alınamadı");
+  return items;
 }
 async function feed(input: Record<string, any>) {
   const interests = (input.interests || []).filter((i: any) => i?.label && i.active !== false).slice(0, 20);
   const engines = { news: true, finance: true, academic: true, youtube: true, rss: true, social: false, hackernews: true, ...(input.engines || {}) };
+  const custom = (input.sources || []).filter((source: any) => source?.url && source.enabled !== false).slice(0, 12);
   const jobs: Array<[string, Promise<any[]>]> = [];
-  if (engines.news) jobs.push(["news", Promise.allSettled(interests.slice(0, 3).map(async (i: any) => { const url = `https://news.google.com/rss/search?q=${encodeURIComponent(i.label)}&hl=tr&gl=TR&ceid=TR:tr`; return parseFeed(await getText(url), { label: "Google News", kind: "news", url }); })).then((r) => r.flatMap((x) => x.status === "fulfilled" ? x.value : []))]);
+  if (engines.news) {
+    const queries = interests.slice(0, 3).map((i: any) => i.label).filter(Boolean);
+    const sources = (queries.length ? queries : ["teknoloji ekonomi"]).map((query: string) => ({ label: "Google News", kind: "news", url: `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=tr&gl=TR&ceid=TR:tr` }));
+    sources.push({ label: "Ars Technica", kind: "news", url: "https://feeds.arstechnica.com/arstechnica/index" });
+    jobs.push(["news", loadFeedSources([...sources, ...custom.filter((source: any) => source.kind === "news")])]);
+  }
   if (engines.academic) jobs.push(["academic", getJson(`https://api.openalex.org/works?search=${encodeURIComponent(interests.slice(0, 4).map((i: any) => i.label).join(" ") || "technology society")}&filter=from_publication_date:2023-01-01&sort=relevance_score:desc&per-page=12`).then(async (data) => Promise.all((data.results || []).map(async (work: any) => normalize({ id: await stableId(work.id), engine: "academic", source: work.primary_location?.source?.display_name || "OpenAlex", title: work.display_name, summary: work.abstract_inverted_index ? Object.entries(work.abstract_inverted_index).flatMap(([word, positions]: any) => positions.map((position: number) => [position, word])).sort((a: any, b: any) => a[0] - b[0]).map((e: any) => e[1]).join(" ") : "Akademik künye doğrulandı; özet sağlayıcı tarafından paylaşılmadı.", url: work.doi || work.primary_location?.landing_page_url || work.id, published: work.publication_date, openAccess: Boolean(work.open_access?.is_oa) })) ))]);
-  if (engines.finance && input.symbols?.length) jobs.push(["finance", Promise.allSettled(input.symbols.slice(0, 5).map(async (symbol: string) => { const data = await getJson(`https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=6&quotesCount=1`); return Promise.all((data.news || []).map(async (news: any) => normalize({ id: await stableId(news.uuid || news.link), engine: "finance", source: news.publisher || "Yahoo Finance", title: news.title, summary: "Piyasa veya şirket gelişmesi. Ayrıntıyı asıl kaynaktan doğrulayabilirsin.", url: news.link, published: news.providerPublishTime ? new Date(news.providerPublishTime * 1000).toISOString() : "", symbol: symbol.toUpperCase() }))); })).then((r) => r.flatMap((x) => x.status === "fulfilled" ? x.value : []))]);
-  if (engines.hackernews) jobs.push(["hackernews", getJson("https://hacker-news.firebaseio.com/v0/topstories.json").then(async (ids) => Promise.all((ids || []).slice(0, 20).map(async (id: number) => { const story = await getJson(`https://hacker-news.firebaseio.com/v0/item/${id}.json`); return normalize({ id: `hn-${id}`, engine: "news", source: "Hacker News", title: story.title, summary: "Teknoloji topluluğunda öne çıkan güncel bağlantı.", url: story.url || `https://news.ycombinator.com/item?id=${id}`, published: new Date(story.time * 1000).toISOString() }); })))]);
-  const custom = (input.sources || []).filter((s: any) => s.enabled !== false && engines[s.kind || "rss"] !== false).slice(0, 12);
-  if (custom.length) jobs.push(["custom", Promise.allSettled(custom.map(async (source: any) => { const url = checkedUrl(source.url); return parseFeed(await getText(url.href), { ...source, url: url.href }); })).then((r) => r.flatMap((x) => x.status === "fulfilled" ? x.value : []))]);
+  if (engines.finance && input.symbols?.length) jobs.push(["finance", Promise.allSettled(input.symbols.slice(0, 5).map(async (symbol: string) => { const data = await getJson(`https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=6&quotesCount=1`); return Promise.all((data.news || []).map(async (news: any) => normalize({ id: await stableId(news.uuid || news.link), engine: "finance", source: news.publisher || "Yahoo Finance", title: news.title, summary: "Piyasa veya şirket gelişmesi. Ayrıntıyı asıl kaynaktan doğrulayabilirsin.", url: news.link, published: news.providerPublishTime ? new Date(news.providerPublishTime * 1000).toISOString() : "", symbol: symbol.toUpperCase() }))); })).then((results) => { const items = results.flatMap((result) => result.status === "fulfilled" ? result.value : []); const failed = results.find((result) => result.status === "rejected") as PromiseRejectedResult | undefined; if (!items.length && failed) throw failed.reason; return items; })]);
+  if (engines.youtube) jobs.push(["youtube", loadFeedSources([...defaultFeedSources.youtube, ...custom.filter((source: any) => source.kind === "youtube")])]);
+  if (engines.rss) jobs.push(["rss", loadFeedSources([...defaultFeedSources.rss, ...custom.filter((source: any) => !source.kind || source.kind === "rss")])]);
+  if (engines.hackernews) jobs.push(["hackernews", getJson("https://hacker-news.firebaseio.com/v0/topstories.json").then(async (ids) => Promise.all((ids || []).slice(0, 20).map(async (id: number) => { const story = await getJson(`https://hacker-news.firebaseio.com/v0/item/${id}.json`); return normalize({ id: `hn-${id}`, engine: "hackernews", source: "Hacker News", title: story.title, summary: "Teknoloji topluluğunda öne çıkan güncel bağlantı.", url: story.url || `https://news.ycombinator.com/item?id=${id}`, published: new Date(story.time * 1000).toISOString() }); })))]);
+  const socialSources = custom.filter((source: any) => source.kind === "social");
+  if (engines.social && socialSources.length) jobs.push(["social", loadFeedSources(socialSources)]);
+
   const settled = await Promise.allSettled(jobs.map(([, promise]) => promise));
   const errors = settled.flatMap((result, index) => result.status === "rejected" ? [{ engine: jobs[index][0], message: result.reason?.message || "Kaynak alınamadı" }] : []);
+  const rawItems = settled.flatMap((result) => result.status === "fulfilled" ? result.value : []);
   const seen = new Set<string>();
   const scoring = [...interests, ...(input.symbols || []).map((symbol: string) => ({ label: symbol.toUpperCase(), keywords: [symbol.toUpperCase()], intensity: 5 }))];
-  const items = settled.flatMap((r) => r.status === "fulfilled" ? r.value : []).filter((item) => { const key = item.url || item.title; if (seen.has(key)) return false; seen.add(key); return true; }).map((item) => score(item, scoring)).sort((a, b) => b.score - a.score).slice(0, 48);
-  return { items, errors, generatedAt: new Date().toISOString(), activeEngines: Object.entries(engines).filter(([, enabled]) => enabled).map(([name]) => name) };
+  const rankedItems: any[] = rawItems.filter((item) => { const key = item.url || item.title; if (seen.has(key)) return false; seen.add(key); return true; }).map((item) => score(item, scoring)).sort((a, b) => b.score - a.score);
+  const priority = Object.keys(engines).flatMap((engine) => rankedItems.filter((item) => item.engine === engine).slice(0, 3)).sort((a, b) => b.score - a.score);
+  const priorityIds = new Set(priority.map((item) => item.id));
+  const items = [...priority, ...rankedItems.filter((item) => !priorityIds.has(item.id))].slice(0, 48);
+  const engineStatuses = Object.entries(engines).map(([engine, enabled]) => {
+    if (!enabled) return { engine, status: "off", itemCount: 0, message: "Kapalı" };
+    const indexes = jobs.map(([name], index) => name === engine ? index : -1).filter((index) => index >= 0);
+    if (!indexes.length) return { engine, status: "setup", itemCount: 0, message: engine === "social" ? "Bir sosyal RSS kaynağı ekle" : "Kaynak veya sembol gerekli" };
+    const itemCount = indexes.reduce((total, index) => total + (settled[index].status === "fulfilled" ? settled[index].value.length : 0), 0);
+    const failed = indexes.some((index) => settled[index].status === "rejected");
+    return { engine, status: itemCount ? "ready" : failed ? "error" : "empty", itemCount, message: itemCount ? `${itemCount} içerik geldi` : failed ? "Kaynağa ulaşılamadı" : "Yeni içerik bulunamadı" };
+  });
+  return { items, errors, generatedAt: new Date().toISOString(), activeEngines: engineStatuses.filter((entry) => entry.status === "ready").map((entry) => entry.engine), engineStatuses };
 }
 async function recommendations(input: Record<string, any>) {
   const query = input.query || "artificial intelligence economy energy";
