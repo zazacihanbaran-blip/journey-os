@@ -18,12 +18,13 @@ test("canlı akademik kaynaklardan öneri üretir", { skip: !live }, async () =>
 });
 
 test("canlı piyasa geçmişini getirir", { skip: !live }, async () => {
-  const response = await fetch(`${base}/api/portfolio/NVDA`);
+  const response = await fetch(`${base}/api/portfolio/NVDA?range=1H`);
   assert.equal(response.status, 200);
   const data = await response.json();
   assert.equal(data.symbol, "NVDA");
   assert.ok(data.price > 0);
   assert.ok(data.points.length > 20);
+  assert.match(data.points.at(-1).date, /T\d{2}:\d{2}/);
 });
 test("canlı akış motorlarının her biri gerçek içerik üretir", { skip: !live }, async () => {
   const response = await fetch(`${base}/api/feed`, {

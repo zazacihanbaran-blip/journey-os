@@ -7,10 +7,16 @@ const seed = {
   portfolioRange: "1A",
   portfolioPanel: "overview",
   portfolioPoint: 11,
+  portfolioNotes: {
+    NVDA: { thesis: "AI altyapı liderliği", note: "Enerji erişimi ve teslimat takvimini yakından izle.", risk: "Talep ile teslimat takvimi arasındaki fark" },
+    MU: { thesis: "HBM talep döngüsü", note: "HBM talebi ile klasik bellek döngüsünü ayrı değerlendir.", risk: "Klasik bellek fiyatlama riski" },
+    MP: { thesis: "Stratejik tedarik zinciri", note: "Stratejik değerin kalıcı marja dönüşmesini izle.", risk: "Marj doğrulaması" }
+  },
+  videoNotes: [],
   academicTopic: "AI ekonomisi",
   academicSort: "relevance",
   demoEmptyLibrary: false,
-  videoJob: { status: "ready", url: "https://youtube.com/watch?v=demo", title: "AI yatırımlarının görünmeyen sınırı", error: "", question: "", answer: "" },
+  videoJob: { status: "idle", url: "", title: "", error: "", question: "", answer: "" },
   exploreOptions: { context: true, primary: false, counter: true },
   recommendationSettings: { timeBudget: "20", depth: "Dengeli", novelty: 65, counter: 25, sourceStrictness: "Seçili kaynaklar önce", formats: ["Makale", "Video", "Rapor"], sources: ["reuters", "ft", "nature", "nber", "iea", "youtube-experts"] },
   recommendationIndex: 0,
@@ -212,7 +218,9 @@ const state = {
     sources: stored?.personalFeed?.sources || seed.personalFeed.sources,
     symbols: stored?.personalFeed?.symbols || seed.personalFeed.symbols
   },
-  videoJob: { ...seed.videoJob, ...(stored?.videoJob || {}) },
+  portfolioNotes: { ...seed.portfolioNotes, ...(stored?.portfolioNotes || {}) },
+  videoNotes: stored?.videoNotes || seed.videoNotes,
+  videoJob: stored?.videoJob?.url?.includes("demo") ? { ...seed.videoJob } : { ...seed.videoJob, ...(stored?.videoJob || {}) },
   exploreOptions: { ...seed.exploreOptions, ...(stored?.exploreOptions || {}) },
   recommendationSettings: { ...seed.recommendationSettings, ...(stored?.recommendationSettings || {}) },
   researchSchedules: stored?.researchSchedules || seed.researchSchedules,
@@ -229,6 +237,7 @@ let exploreQuery = "";
 let exploreResults = [];
 let exploreLoading = false;
 let exploreSearched = false;
+let exploreError = "";
 let liveRecommendationState = { status: "idle", items: [], error: "", generatedAt: "" };
 let livePortfolio = {};
 let liveAcademicState = { status: "idle", items: [], error: "", generatedAt: "", provider: "" };
@@ -340,8 +349,8 @@ function setRoute(next) {
   document.querySelectorAll("[data-route]").forEach((el) => el.classList.toggle("is-active", el.dataset.route === next));
   render(); window.scrollTo({ top: 0, behavior: "smooth" }); requestAnimationFrame(() => app.focus({ preventScroll: true }));
   if (next === "recommendations" && liveRecommendationState.status === "idle") refreshLiveRecommendations();
-  if ((next === "feed" || next === "today") && personalFeedState.status === "idle") refreshPersonalFeed();
-  if (next === "portfolio" && !livePortfolio[state.activeTicker]) refreshLivePortfolio(state.activeTicker);
+  if (["feed", "today", "video", "academic", "portfolio", "topics", "journey"].includes(next) && personalFeedState.status === "idle") refreshPersonalFeed();
+  if (next === "portfolio") refreshPortfolioWatchlist();
   if (next === "academic" && liveAcademicState.status === "idle") refreshLiveAcademic();
   if (next === "profile") refreshBackendSchedules();
 }
@@ -351,11 +360,11 @@ function render() {
 }
 
 function renderToday() {
-  const localFeature = state.items[0];
   const liveFeature = personalFeedState.items[0] || null;
-  const feature = liveFeature ? { ...liveFeature, confidence: `Canlı · puan ${liveFeature.score || "—"}`, time: `${liveFeature.readingMinutes || 2} dk` } : localFeature;
+  const feature = liveFeature ? { ...liveFeature, confidence: `Canlı · puan ${liveFeature.score || "—"}`, time: `${liveFeature.readingMinutes || 2} dk` } : { id: "live-wait", title: "Canlı seçkin hazırlanıyor", summary: "Haber, akademi, YouTube, RSS, finans ve teknoloji motorları kişisel ilgi alanların için taranıyor.", source: "Gerçek kaynak motorları", confidence: "Bekleniyor", time: "—" };
   const activeJourney = journeyById(state.activeJourney) || state.journeys[0];
-  const secondary = liveFeature ? personalFeedState.items.slice(1, 5).map((item) => ({ ...item, type: item.engine, journey: item.source, time: `${item.readingMinutes || 2} dk`, score: { relevance: item.score || 0 } })) : state.items.filter((item) => item.id !== feature.id && item.state !== "rejected").slice(0, 4);
+  const secondary = liveFeature ? personalFeedState.items.slice(1, 5).map((item) => ({ ...item, type: item.engine, journey: item.source, time: `${item.readingMinutes || 2} dk`, score: { relevance: item.score || 0 } })) : [];
+  const sideItem = personalFeedState.items[1] || null;
   const liveUpdated = personalFeedState.generatedAt ? new Date(personalFeedState.generatedAt).toLocaleString("tr-TR", { hour: "2-digit", minute: "2-digit" }) : "canlı kaynaklar hazırlanıyor";
   const address = state.profile.communication.address === "Cihan diye hitap et" ? "Günaydın Cihan." : state.profile.communication.address === "Yalnızca günaydın de" ? "Günaydın." : "Bugün için seçtiklerin.";
   const intro = state.profile.communication.detail === "Doğrudan tam içerik" ? "Portföy ve akademik okumalar bugün önde. Kartları açtığında özet yerine ayrıntılı içerik ve kaynak bilgileriyle başlayacaksın." : state.profile.communication.detail === "Biraz ayrıntılı" ? "Portföyün ve akademik okumaların bugün önde. Önemli gelişmeleri kısa gerekçeleriyle birlikte sıraladım." : "Portföyün ve akademik okumaların bugün önde. Yaklaşık 18 dakikada gözden geçirebileceğin sakin bir seçki hazırladım.";
@@ -370,8 +379,8 @@ function renderToday() {
           <article class="feature-card">
             <div class="card-meta"><span class="dot"></span> ${liveFeature ? "Canlı kaynaklardan seçildi" : "Kişisel seçki hazırlanıyor"} <span class="confidence">${feature.confidence}</span></div>
             <h2 class="feature-title">${escapeHtml(feature.title)}</h2><p class="feature-summary">${escapeHtml(feature.summary)}</p>
-            <div class="impact-line"><strong>Neden şimdi?</strong> ${liveFeature ? escapeHtml(feature.reason || "İlgi alanların, kaynak güveni ve güncellik puanıyla öne çıktı.") : "Canlı kaynaklar gelene kadar kişisel arşivinden güvenli bir içerik gösteriliyor."}</div>
-            <div class="feature-footer"><div class="source">${escapeHtml(feature.source)} · ${feature.time} · ${liveUpdated}</div><div class="actions">${liveFeature ? `<button class="button primary" data-live-url="${escapeHtml(feature.url)}">Kaynağı aç →</button>` : `<button class="button ghost" data-open-feedback="${feature.id}">Geri bildirim</button><button class="button" data-content="${feature.id}">Analizi aç</button><button class="button primary" data-decision="${feature.id}:saved">${state.saved.includes(feature.id) ? "Kaydedildi ✓" : "Kaydet"}</button>`}</div></div>
+            <div class="impact-line"><strong>Neden şimdi?</strong> ${liveFeature ? escapeHtml(feature.reason || "İlgi alanların, kaynak güveni ve güncellik puanıyla öne çıktı.") : "Örnek içerik göstermiyoruz; yalnızca canlı kaynak sonucu geldiğinde burada açılır."}</div>
+            <div class="feature-footer"><div class="source">${escapeHtml(feature.source)} · ${feature.time} · ${liveUpdated}</div><div class="actions">${liveFeature ? `<button class="button primary" data-live-url="${escapeHtml(feature.url)}">Kaynağı aç →</button>` : `<button class="button" data-feed-refresh ${personalFeedState.status === "loading" ? "disabled" : ""}>${personalFeedState.status === "loading" ? "Taranıyor…" : "Yeniden tara"}</button>`}</div></div>
           </article>
           <form class="prompt-bar" id="quickPrompt"><input name="prompt" aria-label="İçerik hakkında sor" placeholder="Bu içerikle konuş veya yeni bir soru bırak..." required><button aria-label="Gönder">→</button></form>
           <div class="journey-tabs">${state.journeys.map((journey) => `<button class="journey-tab ${journey.id === state.activeJourney ? "is-active" : ""}" data-today-journey="${journey.id}"><span class="dot"></span> ${journey.title}</button>`).join("")}</div>
@@ -380,7 +389,7 @@ function renderToday() {
       <aside class="marginalia"><p class="section-label">Zekâ marjinalleri</p>
         <div class="note"><i class="pin"></i><span class="note-kicker">Aktif hipotez</span><h3>${activeJourney.title}</h3><p>${activeJourney.hypothesis}</p></div>
         <div class="timeline-mark">Bugün · 07:15</div>
-        <div class="note"><span class="note-kicker">${state.mode === "film" ? "Bu akşam için" : "Göz atmaya değer"}</span><h3>${state.mode === "film" ? "The Game" : "MP tezinde yeni eşik"}</h3><p>${state.mode === "film" ? "Akıcı ve zihinsel oyunlu; bugünkü tercihine uyuyor." : "Stratejik değer sürüyor, marj dönüşümü hâlâ doğrulanmadı."}</p></div>
+        <div class="note"><span class="note-kicker">${sideItem ? `${feedEngineLabels[sideItem.engine] || sideItem.engine} · ${escapeHtml(sideItem.source)}` : "Canlı kaynak bekleniyor"}</span><h3>${sideItem ? escapeHtml(sideItem.title) : "İkinci bir gerçek sonuç geldiğinde burada görünecek"}</h3><p>${sideItem ? escapeHtml(sideItem.summary) : "Geçmiş veya örnek öneri göstermiyoruz."}</p></div>
         <div class="timeline-mark">Dün · 21:40</div>
       </aside>
     </div>
@@ -398,55 +407,88 @@ function renderPersonalMap() {
 }
 function workspaceRoute(key) { return ({ portfolio: "portfolio", video: "video", academic: "academic", history: "topics", cinema: "topics" })[key] || "topics"; }
 
+function portfolioWatchlist() {
+  return [...new Set((state.personalFeed.symbols || []).map((symbol) => String(symbol).trim().toUpperCase()).filter(Boolean))].slice(0, 8);
+}
+function portfolioAssetFor(ticker) {
+  const known = portfolioAssets.find((item) => item.ticker === ticker);
+  const notes = state.portfolioNotes[ticker] || {};
+  return {
+    ticker, name: known?.name || ticker, price: "—", change: "—", bars: [],
+    thesis: notes.thesis || known?.thesis || "Henüz bir yatırım düşüncesi yazmadın.",
+    signal: notes.risk || known?.signal || "İzlemek istediğin riski ekle.",
+  };
+}
+function portfolioMetaFor(ticker) {
+  const known = portfolioMeta[ticker] || {};
+  const notes = state.portfolioNotes[ticker] || {};
+  return { day: "—", volume: "—", risk: known.risk || "Belirlenmedi", thesisScore: known.thesisScore || 50, note: notes.note || known.note || "Bu varlık için kendi notunu yazarak neyi takip ettiğini belirle." };
+}
+function formatPointDate(value) {
+  if (!value) return "—";
+  return new Date(value).toLocaleString("tr-TR", state.portfolioRange === "1H" ? { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" } : { day: "2-digit", month: "short", year: "numeric" });
+}
 function renderPortfolio() {
-  const baseAsset = portfolioAssets.find((item) => item.ticker === state.activeTicker) || portfolioAssets[0];
-  const live = livePortfolio[baseAsset.ticker];
-  const points = live?.status === "ready" ? live.data.points.slice(-24) : [];
+  const tickers = portfolioWatchlist();
+  if (!tickers.length) return `<section class="page workspace-page"><header class="workspace-header"><div><p class="eyebrow">Canlı portföyün</p><h1 class="page-title">Önce takip etmek istediğin<br>bir sembol ekle.</h1><p class="page-copy">Sembol doğrulanır, ardından fiyat, grafik ve gerçek haberler canlı kaynaktan gelir.</p></div></header>${renderPortfolioEditor([])}</section>`;
+  const ticker = tickers.includes(state.activeTicker) ? state.activeTicker : tickers[0];
+  const baseAsset = portfolioAssetFor(ticker);
+  const live = livePortfolio[ticker];
+  const points = live?.status === "ready" ? live.data.points || [] : [];
   const min = points.length ? Math.min(...points.map((point) => point.close)) : 0;
   const max = points.length ? Math.max(...points.map((point) => point.close)) : 1;
-  const asset = live?.status === "ready" ? { ...baseAsset, name: live.data.name || baseAsset.name, price: live.data.price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }), change: `${live.data.change >= 0 ? "+" : ""}${live.data.change.toLocaleString("tr-TR", { maximumFractionDigits: 2 })}%`, bars: points.map((point) => 20 + ((point.close - min) / Math.max(.01, max - min)) * 80) } : baseAsset;
-  const meta = portfolioMeta[asset.ticker];
+  const bars = points.map((point) => 18 + ((point.close - min) / Math.max(.01, max - min)) * 82);
+  const asset = live?.status === "ready" ? { ...baseAsset, name: live.data.name || baseAsset.name, price: live.data.price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }), change: `${live.data.change >= 0 ? "+" : ""}${live.data.change.toLocaleString("tr-TR", { maximumFractionDigits: 2 })}%`, bars } : baseAsset;
+  const meta = portfolioMetaFor(ticker);
   const relevantNews = live?.status === "ready" ? live.data.news || [] : [];
   const marketTime = live?.status === "ready" ? new Date(live.data.asOf).toLocaleString("tr-TR") : "—";
   const fetchedTime = live?.status === "ready" ? new Date(live.data.fetchedAt).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
+  const selectedIndex = Math.max(0, Math.min(Number(state.portfolioPoint || 0), points.length - 1));
+  const selectedPoint = points[selectedIndex] || points.at(-1);
   return `<section class="page workspace-page">
-    <header class="workspace-header"><div><p class="eyebrow">Cihan'ın portföy notları · ${live?.status === "ready" ? live.data.provider : "canlı bağlantı bekleniyor"}</p><h1 class="page-title">Fiyatı değil,<br>fikrindeki değişimi izle.</h1><p class="page-copy">Şirket, sektör veya politika tarafında gerçekten önemli bir gelişme olduğunda burada görürsün.</p></div><div class="workspace-status ${live?.status || ""}"><span class="red-signal"></span><strong>${live?.status === "loading" || live?.refreshing ? "Piyasa ve haberler yenileniyor" : live?.status === "error" ? "Veri alınamadı" : `${relevantNews.length} güncel gelişme`}</strong><small>${live?.refreshError ? `Son yenileme başarısız: ${escapeHtml(live.refreshError)} · mevcut veri korunuyor` : live?.status === "ready" ? `Piyasa verisi ${marketTime} · alındı ${fetchedTime}` : live?.error || "Canlı bağlantı başlatılıyor"}</small><button class="button" data-refresh-portfolio ${live?.status === "loading" || live?.refreshing ? "disabled" : ""}>${live?.status === "loading" || live?.refreshing ? "Yenileniyor…" : "Şimdi yenile"}</button></div></header>
-    <div class="asset-tabs">${portfolioAssets.map((item) => `<button class="asset-tab ${item.ticker === asset.ticker ? "is-active" : ""}" data-ticker="${item.ticker}"><strong>${item.ticker}</strong><span>${item.price}</span><em class="${item.change.startsWith("-") ? "negative" : ""}">${item.change}</em></button>`).join("")}</div>
-    <div class="portfolio-metrics"><div><span>Gün aralığı</span><strong>${live?.status === "ready" && Number.isFinite(live.data.dayLow) ? `${live.data.dayLow.toLocaleString("tr-TR")}–${live.data.dayHigh.toLocaleString("tr-TR")}` : meta.day}</strong></div><div><span>Hacim</span><strong>${live?.status === "ready" && live.data.volume ? live.data.volume.toLocaleString("tr-TR") : meta.volume}</strong></div><div><span>Piyasa durumu</span><strong>${live?.status === "ready" ? marketStateLabel(live.data.marketState) : "—"}</strong></div><div><span>Tez durumu</span><strong>%${meta.thesisScore}</strong></div><div><span>Risk</span><strong>${meta.risk}</strong></div></div>
-    <div class="portfolio-layout"><section class="market-panel modern"><div class="market-top"><div><span>${asset.name}</span><h2>${asset.price} <small>USD</small></h2><em class="${asset.change.startsWith("-") ? "negative" : ""}">${asset.change}</em></div><div class="range-tabs">${["1H", "1A", "6A", "1Y"].map((range) => `<button class="${state.portfolioRange === range ? "is-active" : ""}" data-range="${range}">${range}</button>`).join("")}</div></div><div class="chart-inspection"><div><span>Seçili nokta</span><strong>${state.portfolioPoint + 1}. dönem</strong></div><p>${meta.note}</p></div><div class="price-chart interactive" aria-label="${asset.ticker} fiyat eğilimi">${asset.bars.map((height, index) => `<button style="--height:${height}%" class="${index === state.portfolioPoint ? "current" : ""}" data-portfolio-point="${index}" title="${index + 1}. dönem · ${height}"><i></i></button>`).join("")}</div><div class="chart-axis"><span>Başlangıç</span><span>Bugün</span></div><div class="portfolio-panel-tabs">${[["overview","Özet"],["thesis","Düşüncem"],["risks","Riskler"],["compare","Karşılaştır"]].map(([id,label]) => `<button class="${state.portfolioPanel === id ? "is-active" : ""}" data-portfolio-panel="${id}">${label}</button>`).join("")}</div>${renderPortfolioPanel(asset, meta)}</section>
+    <header class="workspace-header"><div><p class="eyebrow">Canlı portföyün · ${live?.status === "ready" ? live.data.provider : "bağlantı kuruluyor"}</p><h1 class="page-title">Portföyünü sen kur,<br>veriyi sistem izlesin.</h1><p class="page-copy">Listeyi ve yatırım notlarını düzenle. Bu ekran açıkken fiyat ve haberler dakikada bir yeniden alınır.</p></div><div class="workspace-status ${live?.status || ""}"><span class="red-signal"></span><strong>${live?.status === "loading" || live?.refreshing ? "Portföy güncelleniyor" : live?.status === "error" ? "Veri alınamadı" : `${relevantNews.length} güncel gelişme`}</strong><small>${live?.refreshError ? `Son yenileme başarısız: ${escapeHtml(live.refreshError)} · mevcut veri korunuyor` : live?.status === "ready" ? `Piyasa verisi ${marketTime} · alındı ${fetchedTime}` : live?.error || "Canlı bağlantı başlatılıyor"}</small><button class="button" data-refresh-portfolio ${live?.status === "loading" || live?.refreshing ? "disabled" : ""}>${live?.status === "loading" || live?.refreshing ? "Yenileniyor…" : "Tümünü yenile"}</button></div></header>
+    ${renderPortfolioEditor(tickers)}
+    <div class="asset-tabs">${tickers.map((symbol) => { const entry = livePortfolio[symbol]; const change = entry?.status === "ready" ? `${entry.data.change >= 0 ? "+" : ""}${entry.data.change.toLocaleString("tr-TR", { maximumFractionDigits: 2 })}%` : "—"; return `<div class="asset-tab-wrap"><button class="asset-tab ${symbol === ticker ? "is-active" : ""}" data-ticker="${symbol}"><strong>${symbol}</strong><span>${entry?.status === "ready" ? entry.data.price.toLocaleString("tr-TR", { maximumFractionDigits: 2 }) : entry?.status === "error" ? "Hata" : "Alınıyor"}</span><em class="${change.startsWith("-") ? "negative" : ""}">${change}</em></button><button class="asset-remove" data-remove-ticker="${symbol}" aria-label="${symbol} sembolünü kaldır">×</button></div>`; }).join("")}</div>
+    <div class="portfolio-metrics"><div><span>Gün aralığı</span><strong>${live?.status === "ready" && Number.isFinite(live.data.dayLow) ? `${live.data.dayLow.toLocaleString("tr-TR")}–${live.data.dayHigh.toLocaleString("tr-TR")}` : "—"}</strong></div><div><span>Hacim</span><strong>${live?.status === "ready" && live.data.volume ? live.data.volume.toLocaleString("tr-TR") : "—"}</strong></div><div><span>Piyasa durumu</span><strong>${live?.status === "ready" ? marketStateLabel(live.data.marketState) : "—"}</strong></div><div><span>Veri zamanı</span><strong>${formatPointDate(live?.data?.asOf)}</strong></div><div><span>Not durumu</span><strong>${state.portfolioNotes[ticker] ? "Kişisel" : "Eksik"}</strong></div></div>
+    <div class="portfolio-layout"><section class="market-panel modern"><div class="market-top"><div><span>${escapeHtml(asset.name)}</span><h2>${asset.price} <small>${live?.data?.currency || ""}</small></h2><em class="${asset.change.startsWith("-") ? "negative" : ""}">${asset.change}</em></div><div class="range-tabs">${["1H", "1A", "6A", "1Y"].map((range) => `<button class="${state.portfolioRange === range ? "is-active" : ""}" data-range="${range}">${range}</button>`).join("")}</div></div><div class="chart-inspection"><div><span>Seçili veri</span><strong>${selectedPoint ? `${formatPointDate(selectedPoint.date)} · ${selectedPoint.close.toLocaleString("tr-TR", { maximumFractionDigits: 2 })}` : "Veri bekleniyor"}</strong></div><p>${escapeHtml(meta.note)}</p></div>${asset.bars.length ? `<div class="price-chart interactive" aria-label="${asset.ticker} fiyat eğilimi">${asset.bars.map((height, index) => `<button style="--height:${height}%" class="${index === selectedIndex ? "current" : ""}" data-portfolio-point="${index}" title="${formatPointDate(points[index]?.date)} · ${points[index]?.close}"><i></i></button>`).join("")}</div><div class="chart-axis"><span>${formatPointDate(points[0]?.date)}</span><span>${formatPointDate(points.at(-1)?.date)}</span></div>` : `<div class="chart-live-empty"><span class="state-spinner"></span><strong>${live?.status === "error" ? "Bu sembol için veri alınamadı." : "Gerçek grafik verisi alınıyor."}</strong></div>`}<div class="portfolio-panel-tabs">${[["overview","Özet"],["thesis","Düşüncem"],["risks","Riskler"],["compare","Karşılaştır"]].map(([id,label]) => `<button class="${state.portfolioPanel === id ? "is-active" : ""}" data-portfolio-panel="${id}">${label}</button>`).join("")}</div>${renderPortfolioPanel(asset, meta, tickers)}</section>
       <aside class="portfolio-feed"><p class="section-label">Gerçek haberler & gelişmeler</p>${relevantNews.length ? relevantNews.map((news) => `<button class="market-news live-news" data-live-url="${escapeHtml(news.url)}"><div><span class="red-signal"></span><time>${news.published ? new Date(news.published).toLocaleString("tr-TR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "Zaman yok"}</time><em>${news.type}</em></div><h3>${escapeHtml(news.title)}</h3><p>Haberi asıl kaynağında açarak ayrıntıyı ve bağlamı doğrula.</p><small>${escapeHtml(news.source)}</small></button>`).join("") : `<div class="live-empty"><strong>${live?.status === "loading" ? "Haberler taranıyor…" : "Bu sembol için yeni haber bulunamadı."}</strong><small>Sonuç yoksa örnek haber göstermiyoruz.</small></div>`}${live?.status === "ready" ? `<small class="freshness-note">${escapeHtml(live.data.freshnessNote)}</small>` : ""}</aside></div>
     ${renderRecommendationEngine("portfolio")}
   </section>`;
 }
-
-function renderPortfolioPanel(asset, meta) {
-  if (state.portfolioPanel === "thesis") return `<div class="portfolio-insight"><span>Şu anki düşüncen</span><h3>${asset.thesis}</h3><p>${meta.note}</p><button class="button" data-route="topics">Düşüncenin geçmişini aç →</button></div>`;
-  if (state.portfolioPanel === "risks") return `<div class="portfolio-insight risk"><span>Yakından izlenecekler</span><h3>${asset.signal}</h3><ul><li>Talep ile teslimat takvimi arasındaki fark</li><li>Marj ve fiyatlama kalitesindeki değişim</li><li>Resmî şirket açıklamasıyla doğrulama</li></ul></div>`;
-  if (state.portfolioPanel === "compare") return `<div class="portfolio-compare">${portfolioAssets.map((item) => `<button data-ticker="${item.ticker}" class="${item.ticker === asset.ticker ? "is-active" : ""}"><strong>${item.ticker}</strong><span>${item.change}</span><small>Tez %${portfolioMeta[item.ticker].thesisScore}</small></button>`).join("")}</div>`;
-  return `<div class="portfolio-insight"><span>Bugünkü yorum</span><h3>${meta.thesisScore >= 75 ? "Düşüncen korunuyor; yeni kanıt izlemede." : "Düşünce açık, doğrulama henüz tamamlanmadı."}</h3><p>${meta.note}</p></div>`;
+function renderPortfolioEditor(tickers) {
+  return `<section class="portfolio-editor"><form id="portfolioAddForm"><label>Portföye sembol ekle<input name="ticker" maxlength="10" autocomplete="off" placeholder="Örn. AAPL" required></label><button class="button primary">Doğrula ve ekle</button><small class="form-message" data-portfolio-message>En fazla 8 sembol. Eklenmeden önce canlı piyasada doğrulanır.</small></form><span>${tickers.length} / 8 sembol</span></section>`;
 }
-
+function renderPortfolioPanel(asset, meta, tickers) {
+  if (state.portfolioPanel === "thesis") return `<form class="portfolio-insight portfolio-note-form" id="portfolioNoteForm"><span>Bu varlık için düşüncen</span><label>Yatırım tezi<input name="thesis" value="${escapeHtml(asset.thesis)}" required></label><label>Takip notu<textarea name="note" required>${escapeHtml(meta.note)}</textarea></label><label>En önemli risk<input name="risk" value="${escapeHtml(asset.signal)}" required></label><button class="button primary">Notumu kaydet</button></form>`;
+  if (state.portfolioPanel === "risks") return `<div class="portfolio-insight risk"><span>Yakından izleyeceğin risk</span><h3>${escapeHtml(asset.signal)}</h3><p>${escapeHtml(meta.note)}</p><button class="button" data-portfolio-panel="thesis">Düzenle</button></div>`;
+  if (state.portfolioPanel === "compare") return `<div class="portfolio-compare">${tickers.map((ticker) => { const entry = livePortfolio[ticker]; return `<button data-ticker="${ticker}" class="${ticker === asset.ticker ? "is-active" : ""}"><strong>${ticker}</strong><span>${entry?.status === "ready" ? `${entry.data.change >= 0 ? "+" : ""}${entry.data.change.toLocaleString("tr-TR", { maximumFractionDigits: 2 })}%` : "—"}</span><small>${entry?.status === "ready" ? entry.data.price.toLocaleString("tr-TR", { maximumFractionDigits: 2 }) : "Veri alınıyor"}</small></button>`; }).join("")}</div>`;
+  return `<div class="portfolio-insight"><span>Bugünkü kişisel notun</span><h3>${escapeHtml(asset.thesis)}</h3><p>${escapeHtml(meta.note)}</p><button class="button" data-portfolio-panel="thesis">Düşüncemi düzenle</button></div>`;
+}
 function renderVideo() {
   const job = state.videoJob;
-  const statusCopy = { idle: ["Henüz video yok", "Bir bağlantı ekleyerek dene"], processing: ["Video hazırlanıyor", "Yazıya çevriliyor…"], ready: ["1 video hazır", "Türkçe · konuşmacılar ayrıldı"], error: ["Video alınamadı", "Bağlantıyı kontrol et"] }[job.status] || ["Henüz video yok", "Bir bağlantı ekleyerek dene"];
-  return `<section class="page workspace-page"><header class="workspace-header"><div><p class="eyebrow">Video notların</p><h1 class="page-title">Tamamını izlemeden<br>ne anlattığını gör.</h1><p class="page-copy">YouTube bağlantısını ekle; yazılı dökümü, önemli bölümleri, ana iddiaları ve ilgilendiğin konuyla bağını birlikte gör.</p></div><div class="workspace-status ${job.status}"><span class="red-signal"></span><strong>${statusCopy[0]}</strong><small>${statusCopy[1]}</small></div></header>
-    <form class="video-ingest" id="videoIngestForm" novalidate><div><span>YouTube bağlantısı</span><input name="url" type="url" value="${job.status === "error" ? escapeHtml(job.url) : ""}" required placeholder="https://youtube.com/watch?v=..."><small class="form-message ${job.status === "error" ? "is-error" : ""}" role="status">${job.status === "error" ? escapeHtml(job.error) : "YouTube veya youtu.be bağlantısı kullan."}</small></div><button class="button primary" ${job.status === "processing" ? "disabled" : ""}>${job.status === "processing" ? "Hazırlanıyor…" : "Video notlarını hazırla →"}</button></form>
-    <div class="demo-actions"><span>Durumları dene:</span><button class="button ghost" data-video-sample>Başarılı örnek</button><button class="button ghost" data-video-error>Hata örneği</button><button class="button ghost" data-video-clear>Boş durum</button></div>
+  const statusCopy = { idle: ["Henüz video yok", "Bir YouTube bağlantısı ekle"], processing: ["Video hazırlanıyor", "Gerçek altyazı alınıyor…"], ready: ["Video notu hazır", "Altyazı ve arama kullanılabilir"], error: ["Video alınamadı", "Bağlantıyı veya altyazıyı kontrol et"] }[job.status] || ["Henüz video yok", "Bir bağlantı ekle"];
+  return `<section class="page workspace-page"><header class="workspace-header"><div><p class="eyebrow">Video araştırma masan</p><h1 class="page-title">Gerçek altyazıda ara,<br>kendi notunu yaz.</h1><p class="page-copy">YouTube bağlantısını ekle. Sistem yalnızca videonun gerçekten sunduğu altyazıyı kullanır; örnek metin veya uydurma bölüm göstermez.</p></div><div class="workspace-status ${job.status}"><span class="red-signal"></span><strong>${statusCopy[0]}</strong><small>${statusCopy[1]}</small></div></header>
+    <form class="video-ingest" id="videoIngestForm" novalidate><div><span>YouTube bağlantısı</span><input name="url" type="url" value="${escapeHtml(job.url || "")}" required placeholder="https://youtube.com/watch?v=..."><small class="form-message ${job.status === "error" ? "is-error" : ""}" role="status">${job.status === "error" ? escapeHtml(job.error) : "Herkese açık ve altyazısı bulunan YouTube videosu kullan."}</small></div><button class="button primary" ${job.status === "processing" ? "disabled" : ""}>${job.status === "processing" ? "Altyazı alınıyor…" : "Videoyu işle →"}</button></form>
     ${renderVideoState(job)}
+    ${renderVideoNotebook()}
     ${renderRecommendationEngine("video")}
   </section>`;
 }
 
 function renderVideoState(job) {
-  if (job.status === "idle") return `<section class="state-card"><span class="state-icon">＋</span><h2>Bir video eklediğinde notları burada oluşacak.</h2><p>Yazılı döküm, önemli bölümler ve soruların için yanıt alanı birlikte açılır.</p></section>`;
-  if (job.status === "processing") return `<section class="state-card is-loading" aria-live="polite"><span class="state-spinner"></span><h2>Video notları hazırlanıyor.</h2><p>Önce yazıya çeviriyor, sonra önemli bölümleri ayırıyoruz.</p><div class="loading-lines"><i></i><i></i><i></i></div></section>`;
-  if (job.status === "error") return `<section class="state-card is-error" role="alert"><span class="state-icon">!</span><h2>Bu bağlantıyı işleyemedik.</h2><p>${escapeHtml(job.error || "Bağlantıyı kontrol edip yeniden deneyebilirsin.")}</p><button class="button" data-video-sample>Çalışan örneği yükle</button></section>`;
-  const segments = liveTranscriptSegments.length ? liveTranscriptSegments : transcriptSegments;
-  return `<div class="video-engine"><aside class="video-summary"><div class="video-placeholder"><span>${segments.at(-1)?.time || "38:12"}</span><strong>${escapeHtml(job.title || "AI yatırımlarının görünmeyen sınırı")}</strong><small>${liveTranscriptSegments.length ? "Canlı altyazı kaynağı" : "Örnek video notu"}</small></div><div class="engine-steps"><span class="done">1 · Video eklendi</span><span class="done">2 · Yazıya çevrildi</span><span class="done">3 · Bölümler ayrıldı</span><span class="done">4 · Ana fikirler çıkarıldı</span><span class="active">5 · Konularınla bağlandı</span></div><div class="video-actions"><button class="button" data-video-summary="short">Kısaca anlat</button><button class="button primary" data-video-summary="long">Ayrıntılı oku</button></div></aside>
-    <section class="transcript-panel"><div class="transcript-head"><div><p class="section-label">Videonun yazılı dökümü</p><h2>${liveTranscriptSegments.length ? "Gerçek altyazı dökümü" : "Enerji, verimlilik ve rebound etkisi"}</h2></div><input id="transcriptSearch" type="search" placeholder="Dökümde ara..."></div><div class="transcript-list">${segments.map((segment) => `<button class="transcript-row" data-transcript-text="${escapeHtml(segment.text.toLocaleLowerCase("tr"))}"><time>${segment.time}</time><span><strong>${segment.speaker}</strong>${segment.text}</span></button>`).join("")}</div><form class="transcript-question" id="transcriptQuestion"><input name="question" value="${escapeHtml(job.question || "")}" required placeholder="Bu video hakkında sor: 'Karşı görüş ne?'"><button aria-label="Sor">→</button></form>${job.answer ? `<div class="video-answer" aria-live="polite"><strong>Kısa yanıt</strong><p>${escapeHtml(job.answer)}</p></div>` : ""}</section></div>`;
+  if (job.status === "idle") return `<section class="state-card"><span class="state-icon">＋</span><h2>Bir video eklediğinde gerçek döküm burada açılır.</h2><p>Altyazıda arama yapabilir, bir sorunun geçtiği bölümleri bulabilir ve kendi notlarını saklayabilirsin.</p></section>`;
+  if (job.status === "processing") return `<section class="state-card is-loading" aria-live="polite"><span class="state-spinner"></span><h2>Videonun altyazısı alınıyor.</h2><p>Bu işlem YouTube'un sunduğu gerçek altyazı kaynağına bağlıdır.</p><div class="loading-lines"><i></i><i></i><i></i></div></section>`;
+  if (job.status === "error") return `<section class="state-card is-error" role="alert"><span class="state-icon">!</span><h2>Bu bağlantı işlenemedi.</h2><p>${escapeHtml(job.error || "Video herkese açık olmayabilir veya altyazısı bulunmayabilir.")}</p></section>`;
+  const segments = Array.isArray(job.segments) ? job.segments : liveTranscriptSegments;
+  if (!segments.length) return `<section class="state-card is-error"><span class="state-icon">!</span><h2>Kaydedilmiş gerçek altyazı bulunamadı.</h2><p>Bağlantıyı yeniden işleyerek altyazıyı tekrar al.</p></section>`;
+  return `<div class="video-engine"><aside class="video-summary"><div class="video-placeholder"><span>${segments.at(-1)?.time || "—"}</span><strong>${escapeHtml(job.title || "YouTube videosu")}</strong><small>Gerçek altyazı · ${segments.length} bölüm</small></div><div class="engine-steps"><span class="done">1 · Bağlantı doğrulandı</span><span class="done">2 · Altyazı alındı</span><span class="done">3 · Zaman kodları ayrıldı</span><span class="active">4 · Arama ve not hazır</span></div><div class="video-actions"><button class="button" data-video-summary="short">İlk bölümleri oku</button><button class="button primary" data-live-url="${escapeHtml(job.url)}">Videoyu aç ↗</button></div></aside>
+    <section class="transcript-panel"><div class="transcript-head"><div><p class="section-label">Gerçek altyazı dökümü</p><h2>${escapeHtml(job.title || "Video dökümü")}</h2></div><input id="transcriptSearch" type="search" placeholder="Dökümde ara..."></div><div class="transcript-list">${segments.map((segment) => `<button class="transcript-row" data-transcript-text="${escapeHtml(segment.text.toLocaleLowerCase("tr"))}"><time>${escapeHtml(segment.time)}</time><span><strong>${escapeHtml(segment.speaker || "Konuşma")}</strong>${escapeHtml(segment.text)}</span></button>`).join("")}</div><form class="transcript-question" id="transcriptQuestion"><input name="question" value="${escapeHtml(job.question || "")}" required placeholder="Bu konu videoda nerede geçiyor?"><button aria-label="Sor">→</button></form>${job.answer ? `<div class="video-answer" aria-live="polite"><strong>Altyazıda bulunan bölümler</strong><p>${escapeHtml(job.answer)}</p></div>` : ""}</section></div>`;
 }
 
-function academicItems() { return liveAcademicState.items.length ? liveAcademicState.items : academicPapers; }
+function renderVideoNotebook() {
+  return `<section class="video-notebook"><div><p class="eyebrow">Kendi yazı alanın</p><h2>Video not defteri</h2><p>Yorumun sana ait kalır ve profilinle birlikte saklanır.</p></div><form id="videoNoteForm"><input name="title" required placeholder="Not başlığı"><textarea name="text" required placeholder="Videodan ne öğrendin, neye katılmıyorsun?"></textarea><button class="button primary">Notu kaydet</button></form><div class="video-note-list">${state.videoNotes.length ? state.videoNotes.map((note) => `<article><div><strong>${escapeHtml(note.title)}</strong><small>${new Date(note.createdAt).toLocaleString("tr-TR")}</small></div><p>${escapeHtml(note.text)}</p><button class="icon-button" data-video-note-remove="${note.id}" aria-label="Notu sil">×</button></article>`).join("") : `<p class="empty">Henüz kendi notun yok.</p>`}</div></section>`;
+}
+function academicItems() { return liveAcademicState.items; }
 function renderAcademic() {
   const topics = ["AI ekonomisi", "Enerji", "Tarih & güç"];
   const papers = academicItems();
@@ -455,7 +497,7 @@ function renderAcademic() {
   const openCount = visible.filter((paper) => paper.openAccess || paper.access !== "Özet erişimi").length;
   return `<section class="page workspace-page"><header class="workspace-header"><div><p class="eyebrow">İlgilendiğin alanlardan gerçek okumalar · ${liveAcademicState.provider || "OpenAlex"}</p><h1 class="page-title">Önce kaynak,<br>sonra yorum.</h1><p class="page-copy">Makaleyi kim yazmış, nerede yayımlanmış, tam metne erişiliyor mu ve kaynakçada nasıl geçiyor — hepsi aynı yerde.</p></div><div class="workspace-status ${liveAcademicState.status}"><span class="red-signal"></span><strong>${liveAcademicState.status === "loading" ? "Makaleler aranıyor" : liveAcademicState.status === "error" ? "Kaynağa ulaşılamadı" : `${visible.length} gerçek makale`}</strong><small>${liveAcademicState.error ? escapeHtml(liveAcademicState.error) : `${openCount} açık erişim · ${updated}`}</small><button class="button" data-refresh-academic ${liveAcademicState.status === "loading" ? "disabled" : ""}>${liveAcademicState.status === "loading" ? "Taranıyor…" : "Yenile"}</button></div></header>
     <div class="academic-toolbar"><div class="topic-pills">${topics.map((topic) => `<button class="${state.academicTopic === topic ? "is-active" : ""}" data-academic-topic="${topic}">${topic}</button>`).join("")}</div><label><span>Sırala</span><select data-academic-sort><option value="relevance" ${state.academicSort === "relevance" ? "selected" : ""}>Konularımla ilgisi</option><option value="newest" ${state.academicSort === "newest" ? "selected" : ""}>Yeni yayınlar</option><option value="citations" ${state.academicSort === "citations" ? "selected" : ""}>Atıf sayısı</option></select></label></div>
-    <div class="academic-layout"><section class="paper-list">${visible.map((paper, index) => `<article class="paper-card"><div class="paper-index">${String(index + 1).padStart(2, "0")}</div><div><div class="paper-meta"><span>${escapeHtml(paper.journal)} · ${paper.year || "—"}</span><em class="${paper.access === "Özet erişimi" ? "limited" : ""}">${paper.access || (paper.openAccess ? "Açık erişim" : "Özet erişimi")}</em></div><h2>${escapeHtml(paper.title)}</h2><p class="authors">${escapeHtml(Array.isArray(paper.authors) ? paper.authors.join(", ") : paper.authors)}</p><p>${escapeHtml(paper.abstract)}</p><div class="paper-source"><span>${paper.doi ? `DOI ${escapeHtml(paper.doi)}` : "DOI paylaşılmadı"}</span><span>${paper.citations || 0} atıf</span></div><div class="actions"><button class="button ghost" data-cite-paper="${paper.id}">Kaynakçayı al</button><button class="button" data-paper="${paper.id}">Özeti oku</button>${paper.fullTextUrl || paper.url ? `<button class="button primary" data-live-url="${escapeHtml(paper.fullTextUrl || paper.url)}">${paper.fullTextUrl ? "Tam metni aç" : "Yayıncı sayfası"}</button>` : ""}</div></div></article>`).join("")}</section><aside class="academic-side"><div class="source-policy"><p class="section-label">Kaynak konusunda açık olalım</p><h3>Erişemediğimiz metni varmış gibi göstermeyiz.</h3><ul><li>Yazar özeti ile yorumumuz ayrı</li><li>DOI ve yayıncı görünür</li><li>Açık erişim bilgisi belirtilir</li><li>Tam metin yalnızca gerçek bağlantı varsa açılır</li></ul></div><div class="citation-vault"><span>Canlı kaynak</span><strong>${liveAcademicState.provider || "OpenAlex"}</strong><small>son tarama ${updated}</small></div></aside></div>
+    <div class="academic-layout"><section class="paper-list">${visible.length ? visible.map((paper, index) => `<article class="paper-card"><div class="paper-index">${String(index + 1).padStart(2, "0")}</div><div><div class="paper-meta"><span>${escapeHtml(paper.journal)} · ${paper.year || "—"}</span><em class="${paper.access === "Özet erişimi" ? "limited" : ""}">${paper.access || (paper.openAccess ? "Açık erişim" : "Özet erişimi")}</em></div><h2>${escapeHtml(paper.title)}</h2><p class="authors">${escapeHtml(Array.isArray(paper.authors) ? paper.authors.join(", ") : paper.authors)}</p><p>${escapeHtml(paper.abstract)}</p><div class="paper-source"><span>${paper.doi ? `DOI ${escapeHtml(paper.doi)}` : "DOI paylaşılmadı"}</span><span>${paper.citations || 0} atıf</span></div><div class="actions"><button class="button ghost" data-cite-paper="${paper.id}">Kaynakçayı al</button><button class="button" data-paper="${paper.id}">Özeti oku</button>${paper.fullTextUrl || paper.url ? `<button class="button primary" data-live-url="${escapeHtml(paper.fullTextUrl || paper.url)}">${paper.fullTextUrl ? "Tam metni aç" : "Yayıncı sayfası"}</button>` : ""}</div></div></article>`).join("") : `<section class="state-card ${liveAcademicState.status === "loading" ? "is-loading" : ""}"><span class="${liveAcademicState.status === "loading" ? "state-spinner" : "state-icon"}">${liveAcademicState.status === "loading" ? "" : "0"}</span><h2>${liveAcademicState.status === "loading" ? "Gerçek makaleler aranıyor." : "Bu konuda doğrulanmış makale bulunamadı."}</h2><p>${escapeHtml(liveAcademicState.error || "Başka bir konu seçebilir veya yeniden tarayabilirsin.")}</p></section>`}</section><aside class="academic-side"><div class="source-policy"><p class="section-label">Kaynak konusunda açık olalım</p><h3>Erişemediğimiz metni varmış gibi göstermeyiz.</h3><ul><li>Yazar özeti ile yorumumuz ayrı</li><li>DOI ve yayıncı görünür</li><li>Açık erişim bilgisi belirtilir</li><li>Tam metin yalnızca gerçek bağlantı varsa açılır</li></ul></div><div class="citation-vault"><span>Canlı kaynak</span><strong>${liveAcademicState.provider || "OpenAlex"}</strong><small>son tarama ${updated}</small></div></aside></div>
     ${renderRecommendationEngine("academic")}
   </section>`;
 }
@@ -473,40 +515,61 @@ async function refreshLiveAcademic() {
   if (route === "academic") render();
 }
 async function refreshLiveRecommendations() {
-  liveRecommendationState = { ...liveRecommendationState, status: "loading", error: "" }; if (route === "recommendations") render();
+  liveRecommendationState = { ...liveRecommendationState, status: "loading", items: [], error: "" };
+  if (route === "recommendations") render();
   try {
     const activeJourney = journeyById(state.activeJourney) || state.journeys[0];
-    const data = await apiRequest("/api/recommendations", { method: "POST", body: JSON.stringify({ query: `${activeJourney.title} ${activeJourney.hypothesis}`, settings: state.recommendationSettings }) });
-    liveRecommendationState = { status: "ready", generatedAt: data.generatedAt, error: "", items: data.items.map((item) => ({ ...item, sourceId: "live", minutes: Math.max(5, Math.min(30, Math.round((item.summary?.length || 500) / 70))), counter: state.recommendationSettings.counter })) };
+    const journeyInterest = { id: "active-journey", label: `${activeJourney.title} ${activeJourney.hypothesis}`, keywords: `${activeJourney.title} ${activeJourney.hypothesis}`.split(/\s+/).filter((word) => word.length > 3), intensity: 5, active: true };
+    const data = await apiRequest("/api/feed", { method: "POST", body: JSON.stringify({ interests: [journeyInterest, ...state.personalFeed.interests.filter((item) => item.active)], engines: state.personalFeed.engines, sources: state.personalFeed.sources, symbols: state.personalFeed.symbols }) });
+    const formatByEngine = { academic: "Makale", youtube: "Video", finance: "Rapor", news: "Rapor", rss: "Makale", hackernews: "Makale", social: "Rapor" };
+    const trustByEngine = { academic: 96, finance: 93, news: 86, rss: 82, youtube: 80, hackernews: 78, social: 70 };
+    const items = (data.items || []).filter((item) => item.url).map((item) => ({
+      id: item.id, url: item.url, engine: item.engine, format: formatByEngine[item.engine] || "Makale", type: feedEngineLabels[item.engine] || "Kaynak", source: item.source || item.engine,
+      title: item.title, summary: item.summary || "Kaynak özet paylaşmadı.", why: item.reason || `${activeJourney.title} ve seçtiğin ilgi alanlarıyla eşleşti.`, minutes: item.readingMinutes || 4,
+      novelty: Math.min(100, 55 + Number(item.freshness || 20)), counter: Number(state.recommendationSettings.counter), trust: trustByEngine[item.engine] || 75, match: item.score || 70, published: item.published
+    }));
+    liveRecommendationState = { status: "ready", generatedAt: data.generatedAt, error: "", items };
   } catch (error) { liveRecommendationState = { status: "error", items: [], error: error.message, generatedAt: "" }; }
   if (route === "recommendations") render();
-}
-async function refreshLivePortfolio(ticker) {
+}async function refreshLivePortfolio(ticker, quiet = false) {
+  if (!ticker) return;
   const previous = livePortfolio[ticker];
   livePortfolio[ticker] = previous?.status === "ready" ? { ...previous, refreshing: true, refreshError: "" } : { status: "loading" };
-  if (route === "portfolio") render();
-  try { const data = await apiRequest(`/api/portfolio/${encodeURIComponent(ticker)}`); livePortfolio[ticker] = { status: "ready", data, refreshing: false, refreshError: "" }; }
-  catch (error) { livePortfolio[ticker] = previous?.status === "ready" ? { ...previous, refreshing: false, refreshError: error.message } : { status: "error", error: error.message }; }
-  if (route === "portfolio") render();
+  if (!quiet && route === "portfolio") render();
+  try {
+    const data = await apiRequest(`/api/portfolio/${encodeURIComponent(ticker)}?range=${encodeURIComponent(state.portfolioRange)}`);
+    livePortfolio[ticker] = { status: "ready", data, refreshing: false, refreshError: "" };
+  } catch (error) {
+    livePortfolio[ticker] = previous?.status === "ready" ? { ...previous, refreshing: false, refreshError: error.message } : { status: "error", error: error.message };
+  }
+  if (!quiet && route === "portfolio") render();
 }
-async function refreshBackendSchedules() {
-  try { const data = await apiRequest("/api/schedules"); state.researchSchedules = data.schedules; state.researchReports = data.reports.map((report) => ({ id: report.id, title: report.title, date: new Date(report.createdAt).toLocaleString("tr-TR"), summary: `${report.count || 0} gerçek kaynak sonucu bulundu.` })); persist(); if (route === "profile") render(); }
+async function refreshPortfolioWatchlist() {
+  const tickers = portfolioWatchlist();
+  if (!tickers.length) { if (route === "portfolio") render(); return; }
+  await Promise.allSettled(tickers.map((ticker) => refreshLivePortfolio(ticker, true)));
+  if (route === "portfolio") render();
+}async function refreshBackendSchedules() {
+  try { const data = await apiRequest("/api/schedules"); state.researchSchedules = data.schedules; state.researchReports = data.reports.map((report) => ({ id: report.id, title: report.title, date: new Date(report.createdAt).toLocaleString("tr-TR"), summary: `${report.count || report.items?.length || 0} gerçek kaynak sonucu bulundu.`, items: report.items || [] })); persist(); if (route === "profile") render(); }
   catch {}
 }
 
 function getRecommendations() {
+  if (liveRecommendationState.status !== "ready") return [];
   const settings = state.recommendationSettings;
-  if (liveRecommendationState.status === "ready" && liveRecommendationState.items.length) return liveRecommendationState.items;
-  const strict = settings.sourceStrictness === "Yalnızca seçili kaynaklar";
-  return recommendationPool.filter((item) => settings.formats.includes(item.format) && (!strict || settings.sources.includes(item.sourceId))).map((item) => {
-    const sourceBoost = settings.sources.includes(item.sourceId) ? 18 : settings.sourceStrictness === "Tüm güvenilir kaynaklar" ? 4 : -4;
-    const counterFit = 100 - Math.abs(item.counter - Number(settings.counter));
-    const noveltyFit = 100 - Math.abs(item.novelty - Number(settings.novelty));
+  const selectedLabels = sourceCatalog.filter((source) => settings.sources.includes(source.id)).map((source) => source.label.toLocaleLowerCase("tr"));
+  return liveRecommendationState.items.filter((item) => settings.formats.includes(item.format)).filter((item) => {
+    if (settings.sourceStrictness !== "Yalnızca seçili kaynaklar") return true;
+    const source = item.source.toLocaleLowerCase("tr");
+    return selectedLabels.some((label) => source.includes(label) || label.includes(source));
+  }).map((item) => {
+    const source = item.source.toLocaleLowerCase("tr");
+    const preferred = selectedLabels.some((label) => source.includes(label) || label.includes(source));
     const timeFit = item.minutes <= Number(settings.timeBudget) ? 100 : Math.max(25, 100 - (item.minutes - Number(settings.timeBudget)) * 5);
-    return { ...item, match: Math.max(0, Math.min(100, Math.round((item.trust * .3) + (noveltyFit * .2) + (counterFit * .2) + (timeFit * .12) + sourceBoost))) };
+    const noveltyFit = 100 - Math.abs(item.novelty - Number(settings.novelty));
+    return { ...item, match: Math.min(100, Math.round((item.match * .5) + (item.trust * .18) + (noveltyFit * .14) + (timeFit * .1) + (preferred ? 8 : 0))) };
   }).sort((a, b) => b.match - a.match);
 }
-
 function renderRecommendations() {
   const settings = state.recommendationSettings;
   const results = getRecommendations();
@@ -514,27 +577,39 @@ function renderRecommendations() {
   const active = results[index];
   const groups = [...new Set(sourceCatalog.map((source) => source.group))];
   return `<section class="page recommendation-page">
-    <header class="split-header"><div><p class="eyebrow">Kişisel seçki · ${liveRecommendationState.status === "ready" ? "canlı kaynaklar" : liveRecommendationState.status === "loading" ? "kaynaklar taranıyor" : "yerel seçki"}</p><h1 class="page-title">Ne görmek istediğini<br>sen tarif et.</h1></div><div><p class="page-copy">Kaynakları, karşı görüş oranını, yenilik düzeyini ve ayıracağın zamanı ayrı ayrı belirle. Seçki her değişiklikte yeniden sıralanır.</p><button class="button" data-refresh-recommendations ${liveRecommendationState.status === "loading" ? "disabled" : ""}>${liveRecommendationState.status === "loading" ? "Canlı kaynaklar taranıyor…" : "Canlı kaynakları yenile"}</button>${liveRecommendationState.error ? `<small class="service-error">${escapeHtml(liveRecommendationState.error)}</small>` : ""}</div></header>
+    <header class="split-header"><div><p class="eyebrow">Kişisel seçki · ${liveRecommendationState.status === "ready" ? "canlı kaynaklar" : liveRecommendationState.status === "loading" ? "kaynaklar taranıyor" : liveRecommendationState.status === "error" ? "bağlantı hatası" : "yenilenmeyi bekliyor"}</p><h1 class="page-title">Ne görmek istediğini<br>sen tarif et.</h1></div><div><p class="page-copy">Kaynakları, karşı görüş oranını, yenilik düzeyini ve ayıracağın zamanı ayrı ayrı belirle. Seçki her değişiklikte yeniden sıralanır.</p><button class="button" data-refresh-recommendations ${liveRecommendationState.status === "loading" ? "disabled" : ""}>${liveRecommendationState.status === "loading" ? "Canlı kaynaklar taranıyor…" : "Canlı kaynakları yenile"}</button>${liveRecommendationState.error ? `<small class="service-error">${escapeHtml(liveRecommendationState.error)}</small>` : ""}</div></header>
     <div class="recommendation-layout"><aside class="recommendation-controls"><form id="recommendationForm">
       <div class="control-section"><div class="control-title"><strong>Zaman ve derinlik</strong><small>Bugünkü seçki</small></div><label>Ayıracağım süre<select name="timeBudget">${["10","20","30","45"].map((value) => `<option value="${value}" ${settings.timeBudget === value ? "selected" : ""}>${value} dakika</option>`).join("")}</select></label><label>Anlatım<select name="depth">${["Kısa", "Dengeli", "Derin"].map((value) => `<option ${settings.depth === value ? "selected" : ""}>${value}</option>`).join("")}</select></label></div>
       <div class="control-section"><div class="control-title"><strong>İçerik dengesi</strong><small>Kaydırarak değiştir</small></div><label class="range-control"><span>Yenilik <output>${settings.novelty}%</output></span><input name="novelty" type="range" min="0" max="100" value="${settings.novelty}"></label><label class="range-control"><span>Karşı görüş <output>${settings.counter}%</output></span><input name="counter" type="range" min="0" max="100" value="${settings.counter}"></label></div>
       <div class="control-section"><div class="control-title"><strong>Biçimler</strong><small>Birden fazla seçebilirsin</small></div><div class="format-options">${["Makale","Video","Rapor"].map((format) => `<label><input type="checkbox" name="formats" value="${format}" ${settings.formats.includes(format) ? "checked" : ""}><span>${format}</span></label>`).join("")}</div></div>
       <div class="control-section"><div class="control-title"><strong>Kaynak yaklaşımı</strong></div><select name="sourceStrictness">${["Seçili kaynaklar önce", "Yalnızca seçili kaynaklar", "Tüm güvenilir kaynaklar"].map((value) => `<option ${settings.sourceStrictness === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
     </form></aside>
-    <main class="recommendation-preview">${active ? `<div class="paper-counter"><span>${index + 1} / ${results.length}</span><span>${settings.timeBudget} dakikalık seçki</span></div><article class="recommendation-paper" key="${active.title}"><div class="paper-source-line"><span>${active.type}</span><strong>${active.source}</strong><em>%${active.match} sana uygun</em></div><h2>${active.title}</h2><p class="paper-summary">${active.summary}</p><div class="paper-why"><span>Neden seçildi?</span><p>${active.why}</p></div><dl class="recommendation-facts"><div><dt>Okuma</dt><dd>${active.minutes} dk</dd></div><div><dt>Yenilik</dt><dd>%${active.novelty}</dd></div><div><dt>Karşı görüş</dt><dd>%${active.counter}</dd></div><div><dt>Kaynak</dt><dd>%${active.trust}</dd></div></dl><div class="paper-actions"><button class="button ghost" data-rec-decision="skip">Bunu gösterme</button><button class="button" data-rec-decision="save">Arşive kaydet</button><button class="button primary" data-rec-decision="attach">Konuya ekle</button></div></article><div class="paper-navigation"><button class="button ghost" data-rec-page="prev" ${index === 0 ? "disabled" : ""}>← Önceki</button><button class="button" data-rec-page="next" ${index >= results.length - 1 ? "disabled" : ""}>Sonraki kâğıt →</button></div>` : `<section class="state-card"><span class="state-icon">0</span><h2>Bu kadar dar bir seçki için sonuç kalmadı.</h2><p>En az bir biçim seç veya kaynak yaklaşımını genişlet.</p></section>`}</main></div>
+    <main class="recommendation-preview">${active ? `<div class="paper-counter"><span>${index + 1} / ${results.length}</span><span>${settings.timeBudget} dakikalık seçki</span></div><article class="recommendation-paper" key="${active.title}"><div class="paper-source-line"><span>${active.type}</span><strong>${active.source}</strong><em>%${active.match} sana uygun</em></div><h2>${active.title}</h2><p class="paper-summary">${active.summary}</p><div class="paper-why"><span>Neden seçildi?</span><p>${active.why}</p></div><dl class="recommendation-facts"><div><dt>Okuma</dt><dd>${active.minutes} dk</dd></div><div><dt>Yenilik</dt><dd>%${active.novelty}</dd></div><div><dt>Karşı görüş</dt><dd>%${active.counter}</dd></div><div><dt>Kaynak</dt><dd>%${active.trust}</dd></div></dl><div class="paper-actions"><button class="button primary" data-live-url="${escapeHtml(active.url)}">Kaynağı aç ↗</button><button class="button ghost" data-rec-decision="skip">Bunu gösterme</button><button class="button" data-rec-decision="save">Arşive kaydet</button><button class="button primary" data-rec-decision="attach">Konuya ekle</button></div></article><div class="paper-navigation"><button class="button ghost" data-rec-page="prev" ${index === 0 ? "disabled" : ""}>← Önceki</button><button class="button" data-rec-page="next" ${index >= results.length - 1 ? "disabled" : ""}>Sonraki kâğıt →</button></div>` : `<section class="state-card ${liveRecommendationState.status === "loading" ? "is-loading" : ""}"><span class="${liveRecommendationState.status === "loading" ? "state-spinner" : "state-icon"}">${liveRecommendationState.status === "loading" ? "" : "0"}</span><h2>${liveRecommendationState.status === "loading" ? "Gerçek kaynaklar taranıyor." : liveRecommendationState.status === "error" ? "Öneri motoruna ulaşılamadı." : "Bu ayarlarla gerçek sonuç kalmadı."}</h2><p>${liveRecommendationState.error ? escapeHtml(liveRecommendationState.error) : "En az bir biçim seç veya kaynak yaklaşımını genişlet."}</p></section>`}</main></div>
     <section class="source-studio"><div class="settings-heading"><div><p class="eyebrow">Hedef kaynak seçkisi</p><h2>Hangi kaynaklara öncelik verelim?</h2></div><p>Seçtiğin kaynaklar sıralamada öne çıkar. “Yalnızca seçili kaynaklar” dersen diğerleri tamamen dışarıda kalır.</p></div>${groups.map((group) => `<div class="source-group"><strong>${group}</strong><div>${sourceCatalog.filter((source) => source.group === group).map((source) => `<label class="source-option"><input type="checkbox" data-source-id="${source.id}" ${settings.sources.includes(source.id) ? "checked" : ""}><span><b>${source.label}</b><small>${source.note}</small></span></label>`).join("")}</div></div>`).join("")}</section>
   </section>`;
 }
 
 function renderRecommendationEngine(type) {
   const copy = {
-    portfolio: { title: "Portföyün için seçilenler", text: "Fiyat hareketinden çok, yatırım fikrini değiştirebilecek gelişmeleri öne alıyorum.", cards: ["NVDA enerji sözleşmeleri", "MU HBM kapasite notu", "MP için karşı kanıt"] },
-    video: { title: "Sıradaki videolar", text: "Anlatım kalitesi, önemli bölümler ve gerçekten yeni bir şey söyleyip söylemediğine göre seçildi.", cards: ["Tarih & güç için 13 dakika", "AI ekonomisi karşı görüşü", "Hafif ama nitelikli sohbet"] },
-    academic: { title: "Okuma listene eklenebilir", text: "Konularınla ilgisi, yöntemi ve tam metne erişim durumu birlikte değerlendirildi.", cards: ["Birincil enerji verisi", "AI verimlilik karşı görüşü", "Kurumlar üzerine meta-analiz"] }
+    portfolio: { title: "Portföyün için canlı kaynaklar", text: "Sembollerinle eşleşen finans ve haber sonuçları." },
+    video: { title: "Gerçek video önerileri", text: "YouTube kaynaklarından ilgi alanlarına göre şu anda getirildi." },
+    academic: { title: "Okuma listene eklenebilir", text: "Akademik motorun güncel ve erişilebilir sonuçları." }
   }[type];
-  return `<section class="workspace-recommendations"><div><p class="eyebrow">Senin için seçildi</p><h2>${copy.title}</h2><p>${copy.text}</p></div><div>${copy.cards.map((card, index) => `<button data-recommendation="${type}:${index}"><span class="red-signal ${index ? "muted" : ""}"></span><strong>${card}</strong><small>${index === 0 ? "Önce buna bak" : index === 1 ? "Yeni bir bağlantı" : "Alışılmışın dışında"}</small></button>`).join("")}</div></section>`;
+  const symbols = portfolioWatchlist().map((symbol) => symbol.toLocaleLowerCase("tr"));
+  const items = personalFeedState.items.filter((item) => {
+    if (type === "video") return item.engine === "youtube";
+    if (type === "academic") return item.engine === "academic";
+    if (type === "portfolio") return item.engine === "finance" || (item.engine === "news" && symbols.some((symbol) => `${item.title} ${item.summary}`.toLocaleLowerCase("tr").includes(symbol)));
+    return false;
+  }).slice(0, 3);
+  return `<section class="workspace-recommendations"><div><p class="eyebrow">Canlı seçki</p><h2>${copy.title}</h2><p>${copy.text}</p></div><div>${items.length ? items.map((item, index) => `<button data-live-url="${escapeHtml(item.url)}"><span class="red-signal ${index ? "muted" : ""}"></span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.source)} · %${item.score || 0} eşleşme</small></button>`).join("") : `<div class="live-empty"><strong>${personalFeedState.status === "loading" ? "Kaynaklar taranıyor…" : "Şu anda doğrulanmış sonuç yok."}</strong><small>Örnek kart göstermiyoruz; motoru yenileyebilirsin.</small></div>`}</div></section>`;
 }
 
+function renderJourneySuggestions(selected) {
+  const words = `${selected.title} ${selected.hypothesis}`.toLocaleLowerCase("tr").split(/\s+/).filter((word) => word.length > 3);
+  const items = personalFeedState.items.filter((item) => words.some((word) => `${item.title} ${item.summary}`.toLocaleLowerCase("tr").includes(word))).slice(0, 3);
+  return `<section class="workspace-recommendations topic-engine"><div><p class="eyebrow">${escapeHtml(selected.title)} için canlı seçki</p><h2>Bu konuyu biraz daha açalım</h2><p>${escapeHtml(selected.hypothesis)}</p></div><div>${items.length ? items.map((item, index) => `<button data-live-url="${escapeHtml(item.url)}"><span class="red-signal ${index ? "muted" : ""}"></span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.source)} · ${feedEngineLabels[item.engine] || item.engine}</small></button>`).join("") : `<div class="live-empty"><strong>Bu konu için henüz gerçek sonuç yok.</strong><small>Gazeteyi yenilediğinde yeni kaynaklar burada görünür.</small></div>`}</div></section>`;
+}
 function renderTopics() {
   const selected = journeyById(state.activeJourney) || state.journeys[0];
   const linked = state.items.filter((item) => item.journeyId === selected.id && state.saved.includes(item.id));
@@ -550,7 +625,7 @@ function renderTopics() {
         <p class="section-label">Fikir değişiklikleri</p>${selected.events.map((event) => `<div class="event-line"><span class="event-date">${event.date} · ${event.kind || "Not"}</span><h3>${event.title}</h3><p>${event.text}</p></div>`).join("")}
       </article>
     </div>
-    <section class="workspace-recommendations topic-engine"><div><p class="eyebrow">${selected.title} için seçilenler</p><h2>Bu konuyu biraz daha açalım</h2><p>${selected.hypothesis}</p></div><div><button><span class="red-signal"></span><strong>Düşünceni sınayan bir kaynak</strong><small>Doğrudan ilgili</small></button><button><span class="red-signal muted"></span><strong>Başka bir alandan bağlantı</strong><small>Yeni bir açı</small></button><button><span class="red-signal muted"></span><strong>En güçlü karşı görüş</strong><small>Farklı düşünmek için</small></button></div></section>
+    ${renderJourneySuggestions(selected)}
   </section>`;
 }
 
@@ -565,19 +640,18 @@ function renderLibrary() {
 }
 
 function renderExplore() {
-  const examples = ["Bu gece Prestige gibi akıcı, zihinsel oyunlu üç film getir.", "AI veri merkezlerinin enerji talebi için iki birincil kaynak ve bir karşı görüş bul.", "Tarih ve güç konumdaki açık sorular için iyi bir uzun sohbet öner."];
+  const examples = ["AI veri merkezlerinin enerji talebi için iki birincil kaynak ve bir karşı görüş bul.", "Portföyümdeki şirketler için son gelişmeleri ve güvenilir videoları getir.", "Tarih ve güç konumdaki açık sorular için güncel makale, RSS ve uzun sohbet bul."];
   return `<section class="page">
-    <header class="split-header"><div><p class="eyebrow">Yeni bir şey bul</p><h1 class="page-title">Bugün neyin peşindesin?</h1></div><p class="page-copy">Ne aradığını kendi cümlelerinle anlat. Zamanına ve ilgilendiğin konulara uyan az sayıda iyi sonuç getirelim.</p></header>
-    <div class="explore-shell"><form class="explore-box" id="exploreForm" novalidate><textarea name="query" aria-label="Araştırma talebi" placeholder="Örneğin: Enerji yatırımlarıyla ilgili güvenilir iki okuma bul..." required>${escapeHtml(exploreQuery)}</textarea><div class="explore-footer"><div class="context-chips"><button type="button" class="chip ${state.exploreOptions.context ? "is-active" : ""}" data-explore-option="context">Konularımı dikkate al</button><button type="button" class="chip ${state.exploreOptions.primary ? "is-active" : ""}" data-explore-option="primary">Yalnızca birincil kaynak</button><button type="button" class="chip ${state.exploreOptions.counter ? "is-active" : ""}" data-explore-option="counter">Karşı görüş ekle</button></div><button class="button primary" ${exploreLoading ? "disabled" : ""}>${exploreLoading ? "Aranıyor…" : "Bul →"}</button></div><small class="form-message" id="exploreMessage">En az üç kelimeyle ne aradığını anlat.</small></form>
-      ${exploreLoading ? `<section class="state-card is-loading"><span class="state-spinner"></span><h2>Kaynaklar gözden geçiriliyor.</h2><p>Tekrarları ayıklayıp seçtiğin ölçütlere göre sıralıyoruz.</p></section>` : exploreResults.length ? `<div class="research-header"><p class="eyebrow">${exploreResults.length} yüksek değerli sonuç · tekrarlar elendi</p><button class="button ghost" data-clear-results>Yeni arama</button></div><div class="research-results">${exploreResults.map((result, index) => renderExploreResult(result, index)).join("")}</div>` : exploreSearched ? `<section class="state-card"><span class="state-icon">0</span><h2>Bu ölçütlerle uygun bir sonuç bulamadık.</h2><p>“Yalnızca birincil kaynak” seçimini kaldırabilir veya aramayı biraz genişletebilirsin.</p><button class="button" data-clear-results>Aramayı düzenle</button></section>` : `<div class="example-prompts">${examples.map((text) => `<button class="example-prompt" data-example="${escapeHtml(text)}">${text}</button>`).join("")}</div>`}
+    <header class="split-header"><div><p class="eyebrow">Gerçek kaynaklarda ara</p><h1 class="page-title">Bugün neyin peşindesin?</h1></div><p class="page-copy">Ne aradığını kendi cümlelerinle anlat. Haber, akademi, YouTube, RSS, finans ve teknoloji kaynaklarını o anda tarayalım.</p></header>
+    <div class="explore-shell"><form class="explore-box" id="exploreForm" novalidate><textarea name="query" aria-label="Araştırma talebi" placeholder="Örneğin: Enerji yatırımlarıyla ilgili güvenilir iki okuma bul..." required>${escapeHtml(exploreQuery)}</textarea><div class="explore-footer"><div class="context-chips"><button type="button" class="chip ${state.exploreOptions.context ? "is-active" : ""}" data-explore-option="context">Konularımı dikkate al</button><button type="button" class="chip ${state.exploreOptions.primary ? "is-active" : ""}" data-explore-option="primary">Akademik / birincil kaynak</button><button type="button" class="chip ${state.exploreOptions.counter ? "is-active" : ""}" data-explore-option="counter">Karşı görüş ekle</button></div><button class="button primary" ${exploreLoading ? "disabled" : ""}>${exploreLoading ? "Gerçek kaynaklar aranıyor…" : "Ara →"}</button></div><small class="form-message ${exploreError ? "is-error" : ""}" id="exploreMessage">${escapeHtml(exploreError || "En az üç kelimeyle ne aradığını anlat.")}</small></form>
+      ${exploreLoading ? `<section class="state-card is-loading"><span class="state-spinner"></span><h2>Canlı motorlar taranıyor.</h2><p>Sonuçlar geçmiş örneklerden değil, şu anda erişilebilen kaynaklardan geliyor.</p></section>` : exploreResults.length ? `<div class="research-header"><p class="eyebrow">${exploreResults.length} gerçek sonuç · kaynak bağlantıları açık</p><button class="button ghost" data-clear-results>Yeni arama</button></div><div class="research-results">${exploreResults.map((result, index) => renderExploreResult(result, index)).join("")}</div>` : exploreSearched ? `<section class="state-card"><span class="state-icon">0</span><h2>Canlı kaynaklarda uygun sonuç bulunamadı.</h2><p>${escapeHtml(exploreError || "Birincil kaynak filtresini kaldırabilir veya aramayı biraz genişletebilirsin.")}</p><button class="button" data-clear-results>Aramayı düzenle</button></section>` : `<div class="example-prompts">${examples.map((text) => `<button class="example-prompt" data-example="${escapeHtml(text)}">${text}</button>`).join("")}</div>`}
     </div>
   </section>`;
 }
 
 function renderExploreResult(result, index) {
-  return `<article class="research-card ${result.saved ? "is-saved" : ""}"><div class="result-number">0${index + 1}</div><div><div class="card-meta"><span class="dot"></span>${result.type} · ${result.source} · kaynak ${result.confidence}</div><h3>${result.title}</h3><p>${result.summary}</p><div class="why-box"><strong>Neden sana göre?</strong>${result.why}</div><div class="score-grid">${scoreBars(result.score)}</div><div class="actions"><button class="button ghost" data-research-skip="${index}">Geç</button><button class="button" data-research-save="${index}" ${result.saved ? "disabled" : ""}>${result.saved ? "Arşivde ✓" : "Arşive kaydet"}</button><button class="button primary" data-research-attach="${index}" ${result.attached ? "disabled" : ""}>${result.attached ? "Konuya eklendi ✓" : "Bir konuya bağla"}</button></div></div></article>`;
+  return `<article class="research-card ${result.saved ? "is-saved" : ""}"><div class="result-number">${String(index + 1).padStart(2, "0")}</div><div><div class="card-meta"><span class="dot"></span>${escapeHtml(result.type)} · ${escapeHtml(result.source)} · ${escapeHtml(result.confidence)}</div><h3>${escapeHtml(result.title)}</h3><p>${escapeHtml(result.summary)}</p><div class="why-box"><strong>Neden sana göre?</strong>${escapeHtml(result.why)}</div><div class="score-grid">${scoreBars(result.score)}</div><div class="actions"><button class="button primary" data-live-url="${escapeHtml(result.url)}">Kaynağı aç ↗</button><button class="button" data-research-save="${index}" ${result.saved ? "disabled" : ""}>${result.saved ? "Arşivde ✓" : "Arşive kaydet"}</button><button class="button" data-research-attach="${index}" ${result.attached ? "disabled" : ""}>${result.attached ? "Konuya eklendi ✓" : "Bir konuya bağla"}</button><button class="button ghost" data-research-skip="${index}">Geç</button></div></div></article>`;
 }
-
 const feedEngineLabels = { news: "Haber", finance: "Finans", academic: "Akademi", youtube: "YouTube", rss: "RSS", hackernews: "Teknoloji", social: "X / sosyal" };
 
 function fallbackFeedItems() {
@@ -588,7 +662,7 @@ function fallbackFeedItems() {
 }
 
 function feedEditionItems() {
-  const items = personalFeedState.items.length ? personalFeedState.items : fallbackFeedItems();
+  const items = personalFeedState.items;
   const pageSize = state.personalFeed.appearance.density === "compact" ? 8 : state.personalFeed.appearance.density === "calm" ? 4 : 6;
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
   state.personalFeed.page = Math.min(state.personalFeed.page, pageCount - 1);
@@ -598,7 +672,7 @@ function feedEditionItems() {
 function renderPersonalFeed() {
   const config = state.personalFeed;
   const edition = feedEditionItems();
-  const generated = personalFeedState.generatedAt ? new Date(personalFeedState.generatedAt).toLocaleString("tr-TR", { hour: "2-digit", minute: "2-digit" }) : "yerel seçki";
+  const generated = personalFeedState.generatedAt ? new Date(personalFeedState.generatedAt).toLocaleString("tr-TR", { hour: "2-digit", minute: "2-digit" }) : "canlı veri bekleniyor";
   const enabledCount = Object.values(config.engines).filter(Boolean).length;
   const engineStatusMap = Object.fromEntries((personalFeedState.engineStatuses || []).map((entry) => [entry.engine, entry]));
   const engineStatus = (engine, enabled) => enabled ? engineStatusMap[engine] || { engine, status: personalFeedState.status === "loading" ? "checking" : "idle", itemCount: 0, message: personalFeedState.status === "loading" ? "Kontrol ediliyor" : "Baskıyla birlikte kontrol edilecek" } : { engine, status: "off", itemCount: 0, message: "Kapalı" };
@@ -614,7 +688,7 @@ function renderPersonalFeed() {
           ${personalFeedState.status === "error" ? `<section class="feed-empty"><h2>Kaynaklara ulaşamadım.</h2><p>${escapeHtml(personalFeedState.error)}</p><button class="button" data-feed-refresh>Tekrar dene</button></section>` : lead ? `<section class="edition-layout">
             <button class="lead-story" data-feed-item="${escapeHtml(lead.id)}" ${lead.url ? "" : "disabled"}><div class="story-kicker">${feedEngineLabels[lead.engine] || lead.engine} · ${escapeHtml(lead.source)}</div><h2>${escapeHtml(lead.title)}</h2><p>${escapeHtml(lead.summary)}</p><div class="story-footer"><span>%${lead.score} eşleşme</span><span>${lead.readingMinutes || 4} dk</span><span>${lead.published ? relativeFeedDate(lead.published) : ""}</span></div><small>${escapeHtml(lead.reason || "")}</small></button>
             <div class="edition-columns">${edition.visible.slice(1).map((item, index) => renderFeedStory(item, index)).join("")}</div>
-          </section>` : `<section class="feed-empty"><h2>Bu baskıda içerik yok.</h2><p>En az bir motoru aç veya yeni bir RSS kaynağı ekle.</p></section>`}
+          </section>` : `<section class="feed-empty"><h2>${personalFeedState.status === "loading" ? "Gerçek kaynaklar okunuyor." : "Bu baskıda içerik yok."}</h2><p>${personalFeedState.status === "loading" ? "Örnek haber göstermeden yeni sonuçları bekliyoruz." : "En az bir motoru aç veya yeni bir RSS kaynağı ekle."}</p></section>`}
           <footer class="newspaper-footer"><span>Kaynaklar otomatik özetlenir; asıl içerik her zaman kaynak sitesinde doğrulanır.</span><strong>${state.personalFeed.page + 1} / ${edition.pageCount}</strong></footer>
           <i class="paper-curl" aria-hidden="true"></i>
         </article>
@@ -640,14 +714,14 @@ function relativeFeedDate(value) { const hours = Math.max(0, Math.round((Date.no
 
 async function refreshPersonalFeed() {
   personalFeedState = { ...personalFeedState, status: "loading", error: "" };
-  if (route === "feed" || route === "today") render();
+  if (["feed", "today", "video", "academic", "portfolio", "topics", "journey"].includes(route)) render();
   try {
     const payload = { interests: state.personalFeed.interests, engines: state.personalFeed.engines, sources: state.personalFeed.sources, symbols: state.personalFeed.symbols };
     const data = await apiRequest("/api/feed", { method: "POST", body: JSON.stringify(payload) });
     personalFeedState = { status: "ready", items: data.items || [], errors: data.errors || [], generatedAt: data.generatedAt, activeEngines: data.activeEngines || [], engineStatuses: data.engineStatuses || [], error: "" };
     state.personalFeed.page = 0; persist();
   } catch (error) { personalFeedState = { ...personalFeedState, status: "error", error: error.message }; }
-  if (route === "feed" || route === "today") render();
+  if (["feed", "today", "video", "academic", "portfolio", "topics", "journey"].includes(route)) render();
 }
 
 function turnFeedPage(nextPage, direction) {
@@ -748,7 +822,7 @@ function saveActiveRecommendation(decision) {
   if (decision === "skip") { state.recommendationIndex = Math.min(state.recommendationIndex + 1, Math.max(0, getRecommendations().length - 1)); persist(); render(); showToast("Bu öneri geçildi"); return; }
   const id = `rec-${Date.now()}`;
   const activeJourney = journeyById(state.activeJourney) || state.journeys[0];
-  state.items.unshift({ id, type: item.type, journeyId: decision === "attach" ? activeJourney.id : "", journey: decision === "attach" ? activeJourney.title : "Bağlanmadı", title: item.title, summary: item.summary, deepSummary: item.why, source: item.source, time: `${item.minutes} dk`, state: "saved", confidence: item.trust >= 95 ? "Yüksek" : "Orta", claims: [item.summary], chapters: ["Özet", "Kaynak", "Konuyla bağlantısı"], score: { relevance: item.match, novelty: item.novelty, impact: 86, trust: item.trust, mode: item.match } });
+  state.items.unshift({ id, url: item.url, type: item.type, journeyId: decision === "attach" ? activeJourney.id : "", journey: decision === "attach" ? activeJourney.title : "Bağlanmadı", title: item.title, summary: item.summary, deepSummary: item.why, source: item.source, time: `${item.minutes} dk`, state: "saved", confidence: item.trust >= 95 ? "Yüksek" : "Orta", claims: [item.summary], chapters: ["Özet", "Kaynak", "Konuyla bağlantısı"], score: { relevance: item.match, novelty: item.novelty, impact: 86, trust: item.trust, mode: item.match } });
   state.saved.push(id);
   if (decision === "attach") activeJourney.events.unshift({ date: `${formatDate()} · Bugün`, title: `${item.title} konuya eklendi`, text: item.why, kind: "Seçki" });
   persist(); showToast(decision === "attach" ? `${activeJourney.title} konusuna eklendi` : "Arşive kaydedildi");
@@ -770,9 +844,9 @@ function runSchedule(id, automatic = false) {
 }
 function openReport(id) {
   const report = state.researchReports.find((item) => item.id === id); if (!report) return;
-  showModal(`<div class="modal-form compact"><p class="eyebrow">${report.date}</p><h2>${report.title}</h2><p class="deep-summary">${report.summary}</p><div class="citation-card"><span>Öne çıkan değişiklik</span><p>Seçtiğin kaynaklarda konuyu etkileyen yeni bir gelişme bulundu. Bu yerel MVP raporu, gerçek servis bağlanana kadar örnek veri kullanır.</p></div><button class="button primary" data-route="recommendations">İlgili seçkiyi aç</button></div>`);
-}
-function runDueSchedules() {
+  showModal(`<div class="modal-form compact"><p class="eyebrow">${escapeHtml(report.date)}</p><h2>${escapeHtml(report.title)}</h2><p class="deep-summary">${escapeHtml(report.summary)}</p><div class="report-live-items">${report.items?.length ? report.items.map((item) => `<button class="button" data-report-url="${escapeHtml(item.url || "")}">${escapeHtml(item.title)} · ${escapeHtml(item.source || "kaynak")}</button>`).join("") : `<p>Bu raporda açılabilir kaynak kaydı bulunmuyor.</p>`}</div><button class="button primary" data-close-modal>Kapat</button></div>`);
+  modalRoot.querySelectorAll("[data-report-url]").forEach((button) => button.addEventListener("click", () => { if (button.dataset.reportUrl) window.open(button.dataset.reportUrl, "_blank", "noopener,noreferrer"); }));
+}function runDueSchedules() {
   state.researchSchedules.filter((schedule) => schedule.enabled && schedule.nextRun && Number(schedule.nextRun) <= Date.now()).forEach((schedule) => runSchedule(schedule.id, true));
 }
 
@@ -793,7 +867,7 @@ function bindViewEvents() {
   document.querySelectorAll("[data-feed-refresh]").forEach((button) => button.addEventListener("click", refreshPersonalFeed));
   document.querySelectorAll("[data-feed-page]").forEach((button) => button.addEventListener("click", () => turnFeedPage(state.personalFeed.page + (button.dataset.feedPage === "next" ? 1 : -1), button.dataset.feedPage)));
   document.querySelectorAll("[data-feed-page-index]").forEach((button) => button.addEventListener("click", () => turnFeedPage(Number(button.dataset.feedPageIndex), Number(button.dataset.feedPageIndex) > state.personalFeed.page ? "next" : "prev")));
-  document.querySelectorAll("[data-feed-item]").forEach((button) => button.addEventListener("click", () => { const item = [...personalFeedState.items, ...fallbackFeedItems()].find((entry) => entry.id === button.dataset.feedItem); if (item?.url) window.open(item.url, "_blank", "noopener,noreferrer"); }));
+  document.querySelectorAll("[data-feed-item]").forEach((button) => button.addEventListener("click", () => { const item = personalFeedState.items.find((entry) => entry.id === button.dataset.feedItem); if (item?.url) window.open(item.url, "_blank", "noopener,noreferrer"); }));
   document.querySelectorAll("[data-live-url]").forEach((button) => button.addEventListener("click", () => window.open(button.dataset.liveUrl, "_blank", "noopener,noreferrer")));
   document.querySelectorAll("[data-feed-engine]").forEach((input) => input.addEventListener("change", () => { state.personalFeed.engines[input.dataset.feedEngine] = input.checked; state.personalFeed.page = 0; persist(); render(); refreshPersonalFeed(); }));
   document.querySelectorAll("[data-feed-interest-toggle]").forEach((button) => button.addEventListener("click", () => { const interest = state.personalFeed.interests.find((item) => item.id === button.dataset.feedInterestToggle); if (!interest) return; interest.active = !interest.active; persist(); render(); refreshPersonalFeed(); }));
@@ -803,29 +877,85 @@ function bindViewEvents() {
   document.querySelector("#feedSourceForm")?.addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); const message = form.querySelector("[data-feed-source-message]"); try { const url = new URL(data.get("url")); if (url.protocol !== "https:") throw new Error("Kaynak HTTPS ile başlamalı."); const kind = data.get("kind"); state.personalFeed.sources.push({ id: `source-${Date.now()}`, label: data.get("label").trim(), kind, url: url.href, enabled: true }); if (kind in state.personalFeed.engines) state.personalFeed.engines[kind] = true; persist(); render(); await refreshPersonalFeed(); showToast("Yeni kaynak baskıya eklendi"); } catch (error) { message.textContent = error.message; message.classList.add("is-error"); } });
   document.querySelectorAll("[data-feed-appearance]").forEach((select) => select.addEventListener("change", () => { const key = select.dataset.feedAppearance; state.personalFeed.appearance[key] = key === "columns" ? Number(select.value) : select.value; state.personalFeed.page = 0; persist(); render(); }));
   document.querySelector("[data-feed-motion]")?.addEventListener("change", (event) => { state.personalFeed.appearance.motion = event.target.checked; persist(); });
-  document.querySelectorAll("[data-ticker]").forEach((button) => button.addEventListener("click", () => { state.activeTicker = button.dataset.ticker; state.portfolioPoint = 11; persist(); render(); if (!livePortfolio[state.activeTicker]) refreshLivePortfolio(state.activeTicker); }));
-  document.querySelectorAll("[data-range]").forEach((button) => button.addEventListener("click", () => { state.portfolioRange = button.dataset.range; persist(); render(); }));
+  document.querySelectorAll("[data-ticker]").forEach((button) => button.addEventListener("click", () => { state.activeTicker = button.dataset.ticker; state.portfolioPoint = 9999; persist(); render(); if (!livePortfolio[state.activeTicker]) refreshLivePortfolio(state.activeTicker); }));
+  document.querySelectorAll("[data-range]").forEach((button) => button.addEventListener("click", () => { state.portfolioRange = button.dataset.range; state.portfolioPoint = 9999; persist(); render(); refreshPortfolioWatchlist(); }));
   document.querySelectorAll("[data-portfolio-point]").forEach((button) => button.addEventListener("click", () => { state.portfolioPoint = Number(button.dataset.portfolioPoint); persist(); render(); }));
   document.querySelectorAll("[data-portfolio-panel]").forEach((button) => button.addEventListener("click", () => { state.portfolioPanel = button.dataset.portfolioPanel; persist(); render(); }));
-  document.querySelectorAll("[data-academic-topic]").forEach((button) => button.addEventListener("click", () => { state.academicTopic = button.dataset.academicTopic; persist(); render(); refreshLiveAcademic(); }));
+  document.querySelector("#portfolioAddForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const message = form.querySelector("[data-portfolio-message]");
+    const ticker = String(new FormData(form).get("ticker") || "").trim().toUpperCase().replace(/[^A-Z0-9.\-]/g, "");
+    const tickers = portfolioWatchlist();
+    if (!ticker) { message.textContent = "Geçerli bir piyasa sembolü yaz."; message.classList.add("is-error"); return; }
+    if (tickers.includes(ticker)) { message.textContent = `${ticker} zaten portföyünde.`; message.classList.add("is-error"); return; }
+    if (tickers.length >= 8) { message.textContent = "Portföy en fazla 8 sembol içerebilir."; message.classList.add("is-error"); return; }
+    message.textContent = `${ticker} canlı piyasada doğrulanıyor…`; message.classList.remove("is-error");
+    try {
+      const data = await apiRequest(`/api/portfolio/${encodeURIComponent(ticker)}?range=${encodeURIComponent(state.portfolioRange)}`);
+      state.personalFeed.symbols.push(ticker);
+      state.portfolioNotes[ticker] ||= { thesis: "Henüz bir yatırım düşüncesi yazmadın.", note: "Neyi takip etmek istediğini buraya yaz.", risk: "İzlemek istediğin riski ekle." };
+      state.activeTicker = ticker; state.portfolioPoint = 9999;
+      livePortfolio[ticker] = { status: "ready", data, refreshing: false, refreshError: "" };
+      persist(); render(); showToast(`${ticker} portföye eklendi`);
+    } catch (error) { message.textContent = `Sembol doğrulanamadı: ${error.message}`; message.classList.add("is-error"); }
+  });
+  document.querySelectorAll("[data-remove-ticker]").forEach((button) => button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const ticker = button.dataset.removeTicker;
+    state.personalFeed.symbols = portfolioWatchlist().filter((symbol) => symbol !== ticker);
+    delete livePortfolio[ticker];
+    if (state.activeTicker === ticker) state.activeTicker = state.personalFeed.symbols[0] || "";
+    persist(); render(); showToast(`${ticker} portföyden kaldırıldı`);
+  }));
+  document.querySelector("#portfolioNoteForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    state.portfolioNotes[state.activeTicker] = { thesis: data.get("thesis").trim(), note: data.get("note").trim(), risk: data.get("risk").trim() };
+    state.portfolioPanel = "overview"; persist(); render(); showToast("Portföy notun kaydedildi");
+  });  document.querySelectorAll("[data-academic-topic]").forEach((button) => button.addEventListener("click", () => { state.academicTopic = button.dataset.academicTopic; persist(); render(); refreshLiveAcademic(); }));
   document.querySelector("[data-academic-sort]")?.addEventListener("change", (event) => { state.academicSort = event.target.value; persist(); render(); showToast("Okumalar yeniden sıralandı"); });
-  document.querySelector("#videoIngestForm")?.addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; const url = new FormData(form).get("url").trim(); if (!url || !isYouTubeUrl(url)) { state.videoJob = { ...state.videoJob, status: "error", url, error: !url ? "Önce bir YouTube bağlantısı ekle." : "Bu bir YouTube bağlantısı değil. youtube.com veya youtu.be adresi kullan." }; persist(); render(); return; } state.videoJob = { ...state.videoJob, status: "processing", url, error: "", answer: "", question: "" }; persist(); render(); try { const data = await apiRequest("/api/videos/transcript", { method: "POST", body: JSON.stringify({ url }) }); liveTranscriptSegments = data.segments.map((segment) => ({ time: segment.time, speaker: "Konuşma", text: segment.text })); state.videoJob = { ...state.videoJob, status: "ready", title: `YouTube videosu · ${data.language.toUpperCase()} altyazı` }; persist(); render(); showToast("Gerçek video dökümü hazır"); } catch (error) { state.videoJob = { ...state.videoJob, status: "error", error: error.message }; persist(); render(); } });
-  document.querySelectorAll("[data-video-sample]").forEach((button) => button.addEventListener("click", () => setVideoDemo("ready")));
-  document.querySelectorAll("[data-video-error]").forEach((button) => button.addEventListener("click", () => setVideoDemo("error")));
-  document.querySelectorAll("[data-video-clear]").forEach((button) => button.addEventListener("click", () => setVideoDemo("idle")));
-  document.querySelectorAll("[data-video-summary]").forEach((button) => button.addEventListener("click", () => showModal(`<div class="modal-form compact"><p class="eyebrow">${button.dataset.videoSummary === "short" ? "Kısa özet" : "Ayrıntılı okuma"}</p><h2>AI yatırımlarında asıl sınır yalnızca çip değil.</h2><p class="deep-summary">Video; elektrik, şebeke bağlantısı ve yerel izinlerin yatırım takvimini nasıl etkilediğini anlatıyor. Karşı görüş ise verimlilik artışının talebi kısmen dengeleyebileceğini söylüyor.</p><button class="button primary" data-close-modal>Tamam</button></div>`)));
-  document.querySelector("#transcriptQuestion")?.addEventListener("submit", (event) => { event.preventDefault(); const question = new FormData(event.currentTarget).get("question").trim(); if (!question) return; state.videoJob.question = question; state.videoJob.answer = question.toLocaleLowerCase("tr").includes("karşı") ? "En güçlü karşı görüş, donanım ve model verimliliğinin toplam enerji talebini beklenenden hızlı düşürebileceği." : "Videoda bu soru en çok 14:05 bölümünde ele alınıyor; konuşmacı bölgesel enerji piyasalarının sonucu değiştirdiğini vurguluyor."; persist(); render(); });
-  document.querySelector("#transcriptSearch")?.addEventListener("input", (event) => { const query = event.target.value.toLocaleLowerCase("tr"); document.querySelectorAll("[data-transcript-text]").forEach((row) => row.hidden = query && !row.dataset.transcriptText.includes(query)); });
+  document.querySelector("#videoIngestForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const url = new FormData(event.currentTarget).get("url").trim();
+    if (!url || !isYouTubeUrl(url)) { state.videoJob = { ...state.videoJob, status: "error", url, error: !url ? "Önce bir YouTube bağlantısı ekle." : "youtube.com veya youtu.be bağlantısı kullan." }; persist(); render(); return; }
+    state.videoJob = { status: "processing", url, title: "", error: "", answer: "", question: "", segments: [] }; persist(); render();
+    try {
+      const data = await apiRequest("/api/videos/transcript", { method: "POST", body: JSON.stringify({ url }) });
+      const segments = (data.segments || []).map((segment) => ({ time: segment.time, speaker: "Konuşma", text: segment.text }));
+      if (!segments.length) throw new Error("Bu videoda kullanılabilir altyazı bulunamadı.");
+      liveTranscriptSegments = segments;
+      state.videoJob = { ...state.videoJob, status: "ready", title: data.title || `YouTube videosu · ${(data.language || "").toUpperCase()} altyazı`, segments };
+      persist(); render(); showToast("Gerçek video altyazısı hazır");
+    } catch (error) { state.videoJob = { ...state.videoJob, status: "error", error: error.message, segments: [] }; persist(); render(); }
+  });
+  document.querySelectorAll("[data-video-summary]").forEach((button) => button.addEventListener("click", () => {
+    const segments = state.videoJob.segments || [];
+    const text = segments.slice(0, 6).map((segment) => `<p><strong>${escapeHtml(segment.time)}</strong> ${escapeHtml(segment.text)}</p>`).join("");
+    showModal(`<div class="modal-form compact"><p class="eyebrow">Videonun gerçek ilk bölümleri</p><h2>${escapeHtml(state.videoJob.title || "Video dökümü")}</h2><div class="deep-summary">${text || "Altyazı bulunamadı."}</div><button class="button primary" data-close-modal>Tamam</button></div>`);
+  }));
+  document.querySelector("#transcriptQuestion")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const question = new FormData(event.currentTarget).get("question").trim(); if (!question) return;
+    const keywords = question.toLocaleLowerCase("tr").split(/\s+/).filter((word) => word.length > 3);
+    const matches = (state.videoJob.segments || []).map((segment) => ({ ...segment, hits: keywords.filter((word) => segment.text.toLocaleLowerCase("tr").includes(word)).length })).filter((segment) => segment.hits).sort((a, b) => b.hits - a.hits).slice(0, 3);
+    state.videoJob.question = question;
+    state.videoJob.answer = matches.length ? matches.map((segment) => `${segment.time}: ${segment.text}`).join(" · ") : "Bu ifadeyle eşleşen bir altyazı bölümü bulunamadı. Daha kısa anahtar kelimelerle tekrar ara.";
+    persist(); render();
+  });
+  document.querySelector("#transcriptSearch")?.addEventListener("input", (event) => { const query = event.target.value.toLocaleLowerCase("tr"); document.querySelectorAll("[data-transcript-text]").forEach((row) => row.hidden = Boolean(query) && !row.dataset.transcriptText.includes(query)); });
+  document.querySelector("#videoNoteForm")?.addEventListener("submit", (event) => { event.preventDefault(); const data = new FormData(event.currentTarget); state.videoNotes.unshift({ id: `video-note-${Date.now()}`, title: data.get("title").trim(), text: data.get("text").trim(), videoUrl: state.videoJob.url || "", createdAt: new Date().toISOString() }); persist(); render(); showToast("Video notun kaydedildi"); });
+  document.querySelectorAll("[data-video-note-remove]").forEach((button) => button.addEventListener("click", () => { state.videoNotes = state.videoNotes.filter((note) => note.id !== button.dataset.videoNoteRemove); persist(); render(); showToast("Not silindi"); }));
   document.querySelectorAll("[data-recommendation]").forEach((button) => button.addEventListener("click", () => { const [kind, index] = button.dataset.recommendation.split(":"); openRecommendation(kind, Number(index)); }));
-  document.querySelectorAll("#recommendationForm select").forEach((select) => select.addEventListener("change", () => { state.recommendationSettings[select.name] = select.value; state.recommendationIndex = 0; persist(); render(); }));
-  document.querySelectorAll("#recommendationForm input[type='range']").forEach((input) => { input.addEventListener("input", () => { input.closest("label").querySelector("output").textContent = `${input.value}%`; state.recommendationSettings[input.name] = Number(input.value); persist(); }); input.addEventListener("change", () => { state.recommendationIndex = 0; render(); }); });
-  document.querySelectorAll("#recommendationForm input[name='formats']").forEach((input) => input.addEventListener("change", () => { state.recommendationSettings.formats = [...document.querySelectorAll("#recommendationForm input[name='formats']:checked")].map((item) => item.value); state.recommendationIndex = 0; persist(); render(); }));
-  document.querySelectorAll("[data-source-id]").forEach((input) => input.addEventListener("change", () => { const id = input.dataset.sourceId; state.recommendationSettings.sources = input.checked ? [...new Set([...state.recommendationSettings.sources, id])] : state.recommendationSettings.sources.filter((source) => source !== id); state.recommendationIndex = 0; persist(); render(); }));
+  document.querySelectorAll("#recommendationForm select").forEach((select) => select.addEventListener("change", () => { state.recommendationSettings[select.name] = select.value; state.recommendationIndex = 0; persist(); render(); refreshLiveRecommendations(); }));
+  document.querySelectorAll("#recommendationForm input[type='range']").forEach((input) => { input.addEventListener("input", () => { input.closest("label").querySelector("output").textContent = `${input.value}%`; state.recommendationSettings[input.name] = Number(input.value); persist(); }); input.addEventListener("change", () => { state.recommendationIndex = 0; render(); refreshLiveRecommendations(); }); });
+  document.querySelectorAll("#recommendationForm input[name='formats']").forEach((input) => input.addEventListener("change", () => { state.recommendationSettings.formats = [...document.querySelectorAll("#recommendationForm input[name='formats']:checked")].map((item) => item.value); state.recommendationIndex = 0; persist(); render(); refreshLiveRecommendations(); }));
+  document.querySelectorAll("[data-source-id]").forEach((input) => input.addEventListener("change", () => { const id = input.dataset.sourceId; state.recommendationSettings.sources = input.checked ? [...new Set([...state.recommendationSettings.sources, id])] : state.recommendationSettings.sources.filter((source) => source !== id); state.recommendationIndex = 0; persist(); render(); refreshLiveRecommendations(); }));
   document.querySelectorAll("[data-rec-page]").forEach((button) => button.addEventListener("click", () => { const count = getRecommendations().length; state.recommendationIndex = button.dataset.recPage === "next" ? Math.min(count - 1, state.recommendationIndex + 1) : Math.max(0, state.recommendationIndex - 1); persist(); render(); }));
   document.querySelectorAll("[data-rec-decision]").forEach((button) => button.addEventListener("click", () => saveActiveRecommendation(button.dataset.recDecision)));
   document.querySelector("[data-refresh-recommendations]")?.addEventListener("click", refreshLiveRecommendations);
   document.querySelector("[data-refresh-academic]")?.addEventListener("click", refreshLiveAcademic);
-  document.querySelector("[data-refresh-portfolio]")?.addEventListener("click", () => refreshLivePortfolio(state.activeTicker));
+  document.querySelector("[data-refresh-portfolio]")?.addEventListener("click", refreshPortfolioWatchlist);
   document.querySelectorAll("[data-paper]").forEach((button) => button.addEventListener("click", () => openPaper(button.dataset.paper)));
   document.querySelectorAll("[data-cite-paper]").forEach((button) => button.addEventListener("click", () => openCitation(button.dataset.citePaper)));
   document.querySelectorAll("[data-mode]").forEach((button) => button.addEventListener("click", () => { state.mode = button.dataset.mode; persist(); render(); showToast(`Mod: ${button.textContent}`); }));
@@ -836,14 +966,19 @@ function bindViewEvents() {
   document.querySelectorAll("[data-content-card]").forEach((card) => card.addEventListener("click", () => openContent(card.dataset.contentCard)));
   document.querySelectorAll("[data-decision]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); const [id, decision] = button.dataset.decision.split(":"); applyDecision(id, decision); }));
   document.querySelectorAll("[data-open-feedback]").forEach((button) => button.addEventListener("click", () => openFeedback(button.dataset.openFeedback)));
-  document.querySelector("#quickPrompt")?.addEventListener("submit", (event) => { event.preventDefault(); exploreQuery = new FormData(event.currentTarget).get("prompt").trim(); if (!exploreQuery) return; exploreResults = buildExploreResults(exploreQuery); exploreSearched = true; setRoute("explore"); });
+  document.querySelector("#quickPrompt")?.addEventListener("submit", (event) => { event.preventDefault(); const query = new FormData(event.currentTarget).get("prompt").trim(); if (!query) return; setRoute("explore"); runExploreSearch(query); });
   document.querySelector("#newJourney")?.addEventListener("click", openJourneyForm);
   document.querySelector("[data-edit-hypothesis]")?.addEventListener("click", (event) => openHypothesisForm(event.currentTarget.dataset.editHypothesis));
   document.querySelector("[data-add-event]")?.addEventListener("click", (event) => openEventForm(event.currentTarget.dataset.addEvent));
   document.querySelectorAll("[data-explore-option]").forEach((chip) => chip.addEventListener("click", () => { const key = chip.dataset.exploreOption; exploreQuery = document.querySelector("#exploreForm textarea")?.value || exploreQuery; state.exploreOptions[key] = !state.exploreOptions[key]; persist(); render(); }));
   document.querySelectorAll("[data-example]").forEach((button) => button.addEventListener("click", () => { const field = document.querySelector("#exploreForm textarea"); field.value = button.dataset.example; field.focus(); }));
-  document.querySelector("#exploreForm")?.addEventListener("submit", (event) => { event.preventDefault(); const query = new FormData(event.currentTarget).get("query").trim(); const message = document.querySelector("#exploreMessage"); if (query.split(/\s+/).filter(Boolean).length < 3) { message.textContent = "Biraz daha ayrıntı verir misin? En az üç kelime yaz."; message.classList.add("is-error"); event.currentTarget.querySelector("textarea").focus(); return; } exploreQuery = query; exploreLoading = true; exploreSearched = true; exploreResults = []; render(); setTimeout(() => { exploreResults = buildExploreResults(exploreQuery).filter((result) => (!state.exploreOptions.primary || result.type.includes("Birincil")) && (state.exploreOptions.counter || result.type !== "Karşı tez")).map((result) => state.exploreOptions.context ? result : { ...result, why: "Arama ölçütlerine ve kaynak kalitesine göre seçildi." }); exploreLoading = false; render(); }, 700); });
-  document.querySelector("[data-clear-results]")?.addEventListener("click", () => { exploreResults = []; exploreQuery = ""; exploreLoading = false; exploreSearched = false; render(); });
+  document.querySelector("#exploreForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const query = new FormData(event.currentTarget).get("query").trim();
+    const message = document.querySelector("#exploreMessage");
+    if (query.split(/\s+/).filter(Boolean).length < 3) { message.textContent = "Biraz daha ayrıntı ver; en az üç kelime yaz."; message.classList.add("is-error"); event.currentTarget.querySelector("textarea").focus(); return; }
+    await runExploreSearch(query);
+  });  document.querySelector("[data-clear-results]")?.addEventListener("click", () => { exploreResults = []; exploreQuery = ""; exploreError = ""; exploreLoading = false; exploreSearched = false; render(); });
   document.querySelectorAll("[data-research-save]").forEach((button) => button.addEventListener("click", () => saveResearchResult(Number(button.dataset.researchSave), false)));
   document.querySelectorAll("[data-research-attach]").forEach((button) => button.addEventListener("click", () => saveResearchResult(Number(button.dataset.researchAttach), true)));
   document.querySelectorAll("[data-research-skip]").forEach((button) => button.addEventListener("click", () => { exploreResults.splice(Number(button.dataset.researchSkip), 1); render(); showToast("Sonuç elendi"); }));
@@ -896,7 +1031,8 @@ function openContent(id) {
   const item = itemById(id); if (!item) return;
   showModal(`<div class="content-detail"><div class="content-detail-head"><div><p class="eyebrow">${item.type} · ${item.journey}</p><h2>${item.title}</h2><p>${item.summary}</p></div><div class="trust-stamp"><span>Kaynak durumu</span><strong>${item.confidence}</strong><small>${item.source}</small></div></div>
     <div class="content-columns"><section><p class="section-label">Biraz daha ayrıntı</p><p class="deep-summary">${item.deepSummary}</p><p class="section-label">Ana iddialar</p><ol class="claim-list">${item.claims.map((claim) => `<li>${claim}</li>`).join("")}</ol><p class="section-label">Bölümler</p><div class="chapter-list">${item.chapters.map((chapter) => `<button>${chapter}</button>`).join("")}</div></section><aside><p class="section-label">Sana uygunluk · ${averageScore(item.score)}</p><div class="score-grid vertical">${scoreBars(item.score)}</div><div class="journey-impact"><strong>Bu konuyla bağlantısı</strong><p>${journeyById(item.journeyId)?.hypothesis || "Bu içerik henüz bir konuya bağlı değil."}</p></div></aside></div>
-    <div class="decision-bar"><span>Zamanını koruyan karar</span><div class="actions"><button class="button ghost" data-modal-feedback="${item.id}">Konu iyi / format kötü</button><button class="button ghost" data-modal-decision="${item.id}:rejected">Atla</button><button class="button" data-modal-decision="${item.id}:summary">Özet yeterli</button><button class="button primary" data-modal-attach="${item.id}">Journey'ye bağla</button></div></div></div>`);
+    <div class="decision-bar"><span>Zamanını koruyan karar</span><div class="actions">${item.url ? `<button class="button primary" data-live-url="${escapeHtml(item.url)}">Asıl kaynağı aç ↗</button>` : ""}<button class="button ghost" data-modal-feedback="${item.id}">Konu iyi / format kötü</button><button class="button ghost" data-modal-decision="${item.id}:rejected">Atla</button><button class="button" data-modal-decision="${item.id}:summary">Özet yeterli</button><button class="button primary" data-modal-attach="${item.id}">Journey'ye bağla</button></div></div></div>`);
+  modalRoot.querySelector("[data-live-url]")?.addEventListener("click", (event) => window.open(event.currentTarget.dataset.liveUrl, "_blank", "noopener,noreferrer"));
   modalRoot.querySelectorAll("[data-modal-decision]").forEach((button) => button.addEventListener("click", () => { const [itemId, decision] = button.dataset.modalDecision.split(":"); applyDecision(itemId, decision); }));
   modalRoot.querySelector("[data-modal-feedback]")?.addEventListener("click", () => openFeedback(item.id));
   modalRoot.querySelector("[data-modal-attach]")?.addEventListener("click", () => openAttachForm(item.id));
@@ -936,26 +1072,49 @@ function openTagForm(key) {
   modalRoot.querySelector("#tagForm").addEventListener("submit", (event) => { event.preventDefault(); const tag = new FormData(event.currentTarget).get("tag").trim(); const message = event.currentTarget.querySelector("[data-form-message]"); if (!tag) { message.textContent = "Bu alan boş bırakılamaz."; message.classList.add("is-error"); return; } if (state.profile[key].some((item) => item.toLocaleLowerCase("tr") === tag.toLocaleLowerCase("tr"))) { message.textContent = "Bu tercih zaten listende."; message.classList.add("is-error"); return; } state.profile[key].push(tag); persist(); closeModal(); render(); showToast("Yeni tercih eklendi"); });
 }
 
-function buildExploreResults(query) {
-  const isFilm = query.toLocaleLowerCase("tr").includes("film") || query.toLocaleLowerCase("tr").includes("prestige");
-  if (isFilm) return [
-    { type: "Film", source: "MUBI", confidence: "Yüksek", title: "The Game", summary: "Kontrollü bilgi, yüksek tempo ve karakter merkezli psikolojik gerilim.", why: "Prestige benzeri zihinsel oyun ve düşük silah aksiyonu beklentinle eşleşiyor.", score: { relevance: 96, novelty: 78, impact: 67, trust: 88, mode: 99 } },
-    { type: "Film", source: "JustWatch", confidence: "Yüksek", title: "Coherence", summary: "Tek mekânda ilerleyen, kısa ve yoğun bir algı oyunu.", why: "Kafanın dolu olduğu bir gecede kısa sürede düşünsel değer sunuyor.", score: { relevance: 90, novelty: 89, impact: 71, trust: 84, mode: 94 } },
-    { type: "Film", source: "Letterboxd seçkisi", confidence: "Orta", title: "The Invisible Guest", summary: "Hızlı akan, sürekli yeniden çerçevelenen bir gizem.", why: "Akıcılık ve sürpriz sinyalleri güçlü; karakter derinliği diğer ikisinden daha düşük.", score: { relevance: 87, novelty: 76, impact: 65, trust: 78, mode: 92 } }
-  ];
-  return [
-    { type: "Birincil rapor", source: "IEA", confidence: "Yüksek", title: "Electricity 2026 · Veri merkezi talebi", summary: "AI veri merkezlerinin bölgesel elektrik talebi ve şebeke etkisi için güncel veri seti.", why: "AI × Ekonomi konundaki enerji darboğazı düşünceni doğrudan sınamaya yardımcı oluyor.", score: { relevance: 98, novelty: 91, impact: 94, trust: 99, mode: 90 } },
-    { type: "Karşı tez", source: "Google Research", confidence: "Yüksek", title: "Hesaplama verimliliği talep artışını yavaşlatabilir mi?", summary: "Model ve donanım verimliliğinin enerji talebi projeksiyonlarını aşağı çekebileceğini savunuyor.", why: "Mevcut hipotezine güçlü bir karşı kanıt sağlayarak yankı odasını kırıyor.", score: { relevance: 94, novelty: 93, impact: 91, trust: 92, mode: 88 } },
-    { type: "Uzun analiz", source: "MIT Energy Initiative", confidence: "Yüksek", title: "Şebeke kuyruğundan veri merkezine", summary: "Bağlantı süresi, üretim kapasitesi ve yerel izinleri tek sistemde inceliyor.", why: "Dağınık darboğazları ortak bir araştırma zincirine bağlıyor.", score: { relevance: 92, novelty: 85, impact: 89, trust: 95, mode: 86 } }
-  ];
+async function runExploreSearch(query) {
+  exploreQuery = query;
+  exploreLoading = true;
+  exploreSearched = true;
+  exploreResults = [];
+  exploreError = "";
+  render();
+  const words = query.split(/[\s,;]+/).map((word) => word.trim()).filter((word) => word.length > 2);
+  const interests = [{ id: `search-${Date.now()}`, label: query, keywords: words, intensity: 5, active: true }];
+  if (state.exploreOptions.context) interests.push(...state.personalFeed.interests.filter((item) => item.active));
+  if (state.exploreOptions.counter) interests.push({ id: "counter", label: `${query} karşı görüş eleştiri`, keywords: [...words, "counterargument", "critique"], intensity: 4, active: true });
+  try {
+    const engines = { ...state.personalFeed.engines, news: true, academic: true, youtube: true, rss: true, hackernews: true };
+    const data = await apiRequest("/api/feed", { method: "POST", body: JSON.stringify({ interests, engines, sources: state.personalFeed.sources, symbols: state.personalFeed.symbols }) });
+    const typeByEngine = { academic: "Akademik çalışma", youtube: "Video", finance: "Piyasa kaynağı", news: "Haber", rss: "RSS okuması", hackernews: "Teknoloji bağlantısı", social: "Sosyal kaynak" };
+    let items = (data.items || []).filter((item) => item.url);
+    if (state.exploreOptions.primary) items = items.filter((item) => item.engine === "academic" || item.openAccess);
+    exploreResults = items.slice(0, 18).map((item) => ({
+      id: item.id,
+      engine: item.engine,
+      url: item.url,
+      type: item.engine === "academic" && item.openAccess ? "Açık erişim akademik çalışma" : typeByEngine[item.engine] || "Kaynak",
+      source: item.source || feedEngineLabels[item.engine] || item.engine,
+      confidence: item.engine === "academic" || item.engine === "finance" ? "yüksek kaynak güveni" : "doğrudan kaynak",
+      title: item.title,
+      summary: item.summary || "Kaynak özet paylaşmadı; ayrıntı için asıl sayfayı aç.",
+      why: state.exploreOptions.context ? (item.reason || "Araman ve kişisel ilgi alanlarınla eşleşti.") : "Yalnızca yazdığın arama ve kaynak kalitesine göre seçildi.",
+      score: { relevance: item.score || 70, novelty: Math.min(100, 55 + Number(item.freshness || 20)), impact: item.score || 70, trust: item.engine === "academic" ? 96 : item.engine === "finance" ? 92 : 82, mode: item.score || 70 }
+    }));
+    exploreError = exploreResults.length ? "" : "Motorlar yanıt verdi ancak bu filtreyle doğrulanabilir sonuç bulamadı.";
+  } catch (error) {
+    exploreError = error.message;
+  } finally {
+    exploreLoading = false;
+    render();
+  }
 }
-
 function saveResearchResult(index, attach) {
   const result = exploreResults[index]; if (!result) return;
   if ((attach && result.attached) || (!attach && result.saved)) return;
   const id = `research-${Date.now()}`;
   const activeJourney = journeyById(state.activeJourney) || state.journeys[0];
-  state.items.unshift({ id, type: result.type, journeyId: attach ? activeJourney.id : "", journey: attach ? activeJourney.title : "Bağlanmadı", title: result.title, summary: result.summary, deepSummary: result.why, source: result.source, time: "6 dk", state: "saved", confidence: result.confidence, claims: [result.summary], chapters: ["Özet", "Kaynak", "Konuyla bağlantısı"], score: result.score });
+  state.items.unshift({ id, url: result.url, type: result.type, journeyId: attach ? activeJourney.id : "", journey: attach ? activeJourney.title : "Bağlanmadı", title: result.title, summary: result.summary, deepSummary: result.why, source: result.source, time: "6 dk", state: "saved", confidence: result.confidence, claims: [result.summary], chapters: ["Özet", "Kaynak", "Konuyla bağlantısı"], score: result.score });
   state.saved.push(id);
   if (attach) activeJourney.events.unshift({ date: `${formatDate()} · Bugün`, title: `${result.title} bağlandı`, text: result.why, kind: "Keşif sonucu" });
   result.saved = true; result.attached = attach || result.attached; persist(); render(); showToast(attach ? `${activeJourney.title} konusuna eklendi` : "Arşive kaydedildi");
@@ -992,14 +1151,14 @@ document.addEventListener("keydown", (event) => { if ((event.metaKey || event.ct
 
 const liveRefreshTimer = window.setInterval(() => {
   if (document.visibilityState !== "visible") return;
-  if (route === "portfolio") refreshLivePortfolio(state.activeTicker);
-  if ((route === "feed" || route === "today") && personalFeedState.status !== "loading" && Date.now() - Date.parse(personalFeedState.generatedAt || 0) > 300_000) refreshPersonalFeed();
+  if (route === "portfolio") refreshPortfolioWatchlist();
+  if (["feed", "today", "video", "academic", "topics", "journey"].includes(route) && personalFeedState.status !== "loading" && Date.now() - Date.parse(personalFeedState.generatedAt || 0) > 300_000) refreshPersonalFeed();
   if (route === "academic" && liveAcademicState.status !== "loading" && Date.now() - Date.parse(liveAcademicState.generatedAt || 0) > 900_000) refreshLiveAcademic();
 }, 60_000);
 window.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible") return;
-  if (route === "portfolio") refreshLivePortfolio(state.activeTicker);
-  if ((route === "feed" || route === "today") && personalFeedState.status === "idle") refreshPersonalFeed();
+  if (route === "portfolio") refreshPortfolioWatchlist();
+  if (["feed", "today", "video", "academic", "topics", "journey"].includes(route) && personalFeedState.status === "idle") refreshPersonalFeed();
   if (route === "academic" && liveAcademicState.status === "idle") refreshLiveAcademic();
 });
 window.addEventListener("pagehide", () => window.clearInterval(liveRefreshTimer), { once: true });

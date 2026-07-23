@@ -109,17 +109,19 @@ async function buildRecommendations({ query = "artificial intelligence economy e
   return unique.map((item) => ({ ...item, match: Math.round(item.trust * .45 + (100 - Math.abs(item.novelty - noveltyTarget)) * .35 + Math.min(100, item.citations) * .2), why: item.openAccess ? "Tam metin erişimi ve konu yakınlığı nedeniyle öne çıktı." : "Kaynak künyesi, güncellik ve konu yakınlığı nedeniyle seçildi." })).sort((a, b) => b.match - a.match).slice(0, 12);
 }
 
-async function getPortfolio(symbol) {
+async function getPortfolio(symbol, requestedRange = "6A") {
   const normalizedSymbol = symbol.toUpperCase();
+  const ranges = { "1H": ["5d", "15m"], "1A": ["1mo", "1d"], "6A": ["6mo", "1d"], "1Y": ["1y", "1d"] };
+  const [range, interval] = ranges[requestedRange] || ranges["6A"];
   const [chartResult, newsResult] = await Promise.allSettled([
-    fetchJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(normalizedSymbol)}?range=6mo&interval=1d`),
+    fetchJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(normalizedSymbol)}?range=${range}&interval=${interval}`),
     fetchJson(`https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(normalizedSymbol)}&newsCount=10&quotesCount=1`)
   ]);
   if (chartResult.status === "rejected") throw chartResult.reason;
   const data = chartResult.value;
   const chart = data.chart?.result?.[0]; if (!chart) throw new Error(data.chart?.error?.description || "Piyasa verisi bulunamadı");
   const quote = chart.indicators?.quote?.[0] || {}; const closes = chart.indicators?.adjclose?.[0]?.adjclose || quote.close || [];
-  const points = (chart.timestamp || []).map((timestamp, index) => ({ date: new Date(timestamp * 1000).toISOString().slice(0, 10), open: quote.open?.[index], high: quote.high?.[index], low: quote.low?.[index], close: closes[index], volume: quote.volume?.[index] })).filter((point) => Number.isFinite(point.close));
+  const points = (chart.timestamp || []).map((timestamp, index) => ({ date: new Date(timestamp * 1000).toISOString(), open: quote.open?.[index], high: quote.high?.[index], low: quote.low?.[index], close: closes[index], volume: quote.volume?.[index] })).filter((point) => Number.isFinite(point.close));
   const latest = points.at(-1); const previous = points.at(-2) || latest; if (!latest) throw new Error("Piyasa verisi boş döndü");
   const change = ((latest.close - previous.close) / previous.close) * 100;
   const news = newsResult.status === "fulfilled" ? (newsResult.value.news || []).slice(0, 8).map((item) => ({ id: item.uuid || item.link, title: item.title, source: item.publisher || "Yahoo Finance", url: item.link, published: item.providerPublishTime ? new Date(item.providerPublishTime * 1000).toISOString() : "", type: "ŞİRKET / PİYASA" })) : [];
@@ -127,10 +129,10 @@ async function getPortfolio(symbol) {
   return {
     symbol: normalizedSymbol, name: quoteMeta.longname || quoteMeta.shortname || chart.meta?.longName || chart.meta?.shortName || normalizedSymbol,
     price: chart.meta?.regularMarketPrice || latest.close, change, currency: chart.meta?.currency || "USD",
-    asOf: chart.meta?.regularMarketTime ? new Date(chart.meta.regularMarketTime * 1000).toISOString() : `${latest.date}T00:00:00.000Z`,
+    asOf: chart.meta?.regularMarketTime ? new Date(chart.meta.regularMarketTime * 1000).toISOString() : latest.date,
     fetchedAt: new Date().toISOString(), marketState: quoteMeta.marketState || chart.meta?.marketState || "UNKNOWN", exchange: quoteMeta.exchange || chart.meta?.exchangeName || "",
     dayLow: quoteMeta.regularMarketDayLow || chart.meta?.regularMarketDayLow, dayHigh: quoteMeta.regularMarketDayHigh || chart.meta?.regularMarketDayHigh, volume: quoteMeta.regularMarketVolume || chart.meta?.regularMarketVolume || latest.volume,
-    points: points.slice(-120), news, provider: "Yahoo Finance",
+    points: points.slice(-260), news, provider: "Yahoo Finance",
     freshnessNote: "Ücretsiz sağlayıcının son piyasa verisi; borsa gerçek zamanı garantisi değildir."
   };
 }
@@ -168,7 +170,7 @@ async function handleApi(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/health") return json(response, 200, { ok: true, service: "journey-os", version: "0.1.0", sources: sourceRegistry });
   if (request.method === "GET" && url.pathname === "/api/sources") return json(response, 200, { sources: sourceRegistry });
   if (request.method === "GET" && url.pathname.startsWith("/api/portfolio/")) {
-    try { return json(response, 200, await getPortfolio(url.pathname.split("/").at(-1))); } catch (error) { return json(response, 502, { error: error.message }); }
+    try { return json(response, 200, await getPortfolio(url.pathname.split("/").at(-1), url.searchParams.get("range") || "6A")); } catch (error) { return json(response, 502, { error: error.message }); }
   }
   if (request.method === "POST" && url.pathname === "/api/recommendations") {
     try { const input = await bodyJson(request); return json(response, 200, { items: await buildRecommendations(input), generatedAt: new Date().toISOString(), providers: ["OpenAlex", "Crossref"] }); } catch (error) { return json(response, 502, { error: error.message }); }
