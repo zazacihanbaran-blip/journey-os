@@ -440,6 +440,12 @@ kbd { font: 400 9px var(--mono); border: 1px solid var(--line); padding: 4px 6px
 .thesis-box p { color: var(--ink-soft); font-size: 10px; }
 .portfolio-feed { padding: 25px; }
 .market-news { padding: 18px 0; border-bottom: 1px solid var(--line); }
+.market-news.live-news { width: 100%; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
+.market-news.live-news:hover h3 { color: var(--accent); }
+.workspace-status .button { margin-top: 12px; }
+.live-empty { display: grid; gap: 6px; padding: 24px 0; color: var(--ink-soft); }
+.live-empty small, .freshness-note { font: 400 8px/1.5 var(--mono); color: var(--ink-soft); }
+.freshness-note { display: block; margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--line); }
 .market-news > div { display: flex; align-items: center; gap: 9px; }
 .market-news time, .market-news em, .market-news small { font: 400 7px var(--mono); color: var(--ink-soft); font-style: normal; }
 .market-news h3 { font: 500 21px/1.08 var(--serif); margin: 11px 0 8px; }

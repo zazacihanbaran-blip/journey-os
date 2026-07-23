@@ -59,8 +59,11 @@ Uygulamayı açtıktan sonra sağ üstteki profil düğmesine basın. Sayfanın 
 - Kişisel gazete, etkin motorları tek içerik biçiminde birleştirir ve ilgi yoğunluğuna göre puanlar.
 - Haberler Google News RSS üzerinden; özel kaynaklar güvenli HTTPS RSS / Atom adreslerinden alınır.
 - X doğrudan anahtarsız okunmaz; kullanıcı kendi RSS köprüsünü ekleyebilir. Repoya API anahtarı yazılmaz.
-- Akademik öneriler OpenAlex ve Crossref üzerinden alınır.
-- Portföy geçmişi Yahoo Finance chart verisinden alınır.
+- Akademik arama OpenAlex üzerinden DOI, yazar, atıf ve açık erişim bağlantılarıyla; öneriler OpenAlex ve Crossref üzerinden alınır.
+- Portföy geçmişi ve son piyasa bilgisi Yahoo Finance chart verisinden, şirket haberleri Yahoo Finance aramasından alınır.
+- Bugün ekranı, kişisel gazetenin gerçek ve güncel kaynak seçkisinden beslenir.
+- Görünür portföy ekranı dakikada bir, kişisel akış beş dakikada bir, akademik sonuçlar on beş dakikada bir yenilenir; tümünde elle yenileme ve alınma zamanı görünür.
+- Ücretsiz piyasa sağlayıcısı borsa gerçek zamanı garantisi vermez; arayüz veriyi “son piyasa verisi” olarak ve zaman damgasıyla gösterir.
 - Video dökümü, YouTube videosunda erişilebilir altyazı varsa alınır.
 - Araştırma programları Node.js sunucusunda kalıcı çalışır.
 

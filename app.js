@@ -231,6 +231,7 @@ let exploreLoading = false;
 let exploreSearched = false;
 let liveRecommendationState = { status: "idle", items: [], error: "", generatedAt: "" };
 let livePortfolio = {};
+let liveAcademicState = { status: "idle", items: [], error: "", generatedAt: "", provider: "" };
 let liveTranscriptSegments = [];
 let personalFeedState = { status: "idle", items: [], errors: [], generatedAt: "", activeEngines: [] };
 let feedTurnDirection = "";
@@ -338,8 +339,9 @@ function setRoute(next) {
   document.querySelectorAll("[data-route]").forEach((el) => el.classList.toggle("is-active", el.dataset.route === next));
   render(); window.scrollTo({ top: 0, behavior: "smooth" }); requestAnimationFrame(() => app.focus({ preventScroll: true }));
   if (next === "recommendations" && liveRecommendationState.status === "idle") refreshLiveRecommendations();
-  if (next === "feed" && personalFeedState.status === "idle") refreshPersonalFeed();
+  if ((next === "feed" || next === "today") && personalFeedState.status === "idle") refreshPersonalFeed();
   if (next === "portfolio" && !livePortfolio[state.activeTicker]) refreshLivePortfolio(state.activeTicker);
+  if (next === "academic" && liveAcademicState.status === "idle") refreshLiveAcademic();
   if (next === "profile") refreshBackendSchedules();
 }
 function render() {
@@ -348,9 +350,12 @@ function render() {
 }
 
 function renderToday() {
-  const feature = state.items[0];
+  const localFeature = state.items[0];
+  const liveFeature = personalFeedState.items[0] || null;
+  const feature = liveFeature ? { ...liveFeature, confidence: `Canlı · puan ${liveFeature.score || "—"}`, time: `${liveFeature.readingMinutes || 2} dk` } : localFeature;
   const activeJourney = journeyById(state.activeJourney) || state.journeys[0];
-  const secondary = state.items.filter((item) => item.id !== feature.id && item.state !== "rejected").slice(0, 4);
+  const secondary = liveFeature ? personalFeedState.items.slice(1, 5).map((item) => ({ ...item, type: item.engine, journey: item.source, time: `${item.readingMinutes || 2} dk`, score: { relevance: item.score || 0 } })) : state.items.filter((item) => item.id !== feature.id && item.state !== "rejected").slice(0, 4);
+  const liveUpdated = personalFeedState.generatedAt ? new Date(personalFeedState.generatedAt).toLocaleString("tr-TR", { hour: "2-digit", minute: "2-digit" }) : "canlı kaynaklar hazırlanıyor";
   const address = state.profile.communication.address === "Cihan diye hitap et" ? "Günaydın Cihan." : state.profile.communication.address === "Yalnızca günaydın de" ? "Günaydın." : "Bugün için seçtiklerin.";
   const intro = state.profile.communication.detail === "Doğrudan tam içerik" ? "Portföy ve akademik okumalar bugün önde. Kartları açtığında özet yerine ayrıntılı içerik ve kaynak bilgileriyle başlayacaksın." : state.profile.communication.detail === "Biraz ayrıntılı" ? "Portföyün ve akademik okumaların bugün önde. Önemli gelişmeleri kısa gerekçeleriyle birlikte sıraladım." : "Portföyün ve akademik okumaların bugün önde. Yaklaşık 18 dakikada gözden geçirebileceğin sakin bir seçki hazırladım.";
   return `<section class="page">
@@ -362,14 +367,10 @@ function renderToday() {
       <div>
         <div class="archive-stack">
           <article class="feature-card">
-            <div class="card-meta"><span class="dot"></span> Bu konu için önemli <span class="confidence">Kaynak durumu · ${feature.confidence}</span></div>
-            <h2 class="feature-title">${feature.title}</h2><p class="feature-summary">${feature.summary}</p>
-            <div class="impact-line"><strong>Neden şimdi?</strong> Aktif hipotezini doğrudan etkiliyor ve bildiğin çip darboğazı anlatısına yeni bir altyapı katmanı ekliyor.</div>
-            <div class="feature-footer"><div class="source">${feature.source} · ${feature.time} · 2 saat önce</div><div class="actions">
-              <button class="button ghost" data-open-feedback="${feature.id}">Geri bildirim</button>
-              <button class="button" data-content="${feature.id}">Analizi aç</button>
-              <button class="button primary" data-decision="${feature.id}:saved">${state.saved.includes(feature.id) ? "Kaydedildi ✓" : "Kaydet"}</button>
-            </div></div>
+            <div class="card-meta"><span class="dot"></span> ${liveFeature ? "Canlı kaynaklardan seçildi" : "Kişisel seçki hazırlanıyor"} <span class="confidence">${feature.confidence}</span></div>
+            <h2 class="feature-title">${escapeHtml(feature.title)}</h2><p class="feature-summary">${escapeHtml(feature.summary)}</p>
+            <div class="impact-line"><strong>Neden şimdi?</strong> ${liveFeature ? escapeHtml(feature.reason || "İlgi alanların, kaynak güveni ve güncellik puanıyla öne çıktı.") : "Canlı kaynaklar gelene kadar kişisel arşivinden güvenli bir içerik gösteriliyor."}</div>
+            <div class="feature-footer"><div class="source">${escapeHtml(feature.source)} · ${feature.time} · ${liveUpdated}</div><div class="actions">${liveFeature ? `<button class="button primary" data-live-url="${escapeHtml(feature.url)}">Kaynağı aç →</button>` : `<button class="button ghost" data-open-feedback="${feature.id}">Geri bildirim</button><button class="button" data-content="${feature.id}">Analizi aç</button><button class="button primary" data-decision="${feature.id}:saved">${state.saved.includes(feature.id) ? "Kaydedildi ✓" : "Kaydet"}</button>`}</div></div>
           </article>
           <form class="prompt-bar" id="quickPrompt"><input name="prompt" aria-label="İçerik hakkında sor" placeholder="Bu içerikle konuş veya yeni bir soru bırak..." required><button aria-label="Gönder">→</button></form>
           <div class="journey-tabs">${state.journeys.map((journey) => `<button class="journey-tab ${journey.id === state.activeJourney ? "is-active" : ""}" data-today-journey="${journey.id}"><span class="dot"></span> ${journey.title}</button>`).join("")}</div>
@@ -383,7 +384,7 @@ function renderToday() {
       </aside>
     </div>
     <section class="daily-edition"><div class="edition-heading"><div><p class="eyebrow">Günün kalan sayısı</p><h2>Dört kısa karar daha</h2></div><span>2 / 5 incelendi</span></div>
-      <div class="edition-grid">${secondary.map((item, index) => `<button class="edition-card" data-content="${item.id}"><span class="edition-index">0${index + 2}</span><span class="note-kicker">${item.type} · ${item.journey}</span><strong>${item.title}</strong><small>${item.time} · sana uygunluk ${averageScore(item.score)}</small></button>`).join("")}</div>
+      <div class="edition-grid">${secondary.map((item, index) => `<button class="edition-card" ${liveFeature ? `data-live-url="${escapeHtml(item.url)}"` : `data-content="${item.id}"`}><span class="edition-index">0${index + 2}</span><span class="note-kicker">${escapeHtml(item.type)} · ${escapeHtml(item.journey)}</span><strong>${escapeHtml(item.title)}</strong><small>${item.time} · sana uygunluk ${averageScore(item.score)}</small></button>`).join("")}</div>
     </section>
     ${renderPersonalMap()}
   </section>`;
@@ -402,15 +403,17 @@ function renderPortfolio() {
   const points = live?.status === "ready" ? live.data.points.slice(-24) : [];
   const min = points.length ? Math.min(...points.map((point) => point.close)) : 0;
   const max = points.length ? Math.max(...points.map((point) => point.close)) : 1;
-  const asset = live?.status === "ready" ? { ...baseAsset, price: live.data.price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }), change: `${live.data.change >= 0 ? "+" : ""}${live.data.change.toLocaleString("tr-TR", { maximumFractionDigits: 2 })}%`, bars: points.map((point) => 20 + ((point.close - min) / Math.max(.01, max - min)) * 80) } : baseAsset;
+  const asset = live?.status === "ready" ? { ...baseAsset, name: live.data.name || baseAsset.name, price: live.data.price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }), change: `${live.data.change >= 0 ? "+" : ""}${live.data.change.toLocaleString("tr-TR", { maximumFractionDigits: 2 })}%`, bars: points.map((point) => 20 + ((point.close - min) / Math.max(.01, max - min)) * 80) } : baseAsset;
   const meta = portfolioMeta[asset.ticker];
-  const relevantNews = portfolioNews.filter((news) => news.ticker === asset.ticker || asset.ticker === "NVDA");
+  const relevantNews = live?.status === "ready" ? live.data.news || [] : [];
+  const marketTime = live?.status === "ready" ? new Date(live.data.asOf).toLocaleString("tr-TR") : "—";
+  const fetchedTime = live?.status === "ready" ? new Date(live.data.fetchedAt).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
   return `<section class="page workspace-page">
-    <header class="workspace-header"><div><p class="eyebrow">Cihan'ın portföy notları · ${live?.status === "ready" ? live.data.provider : "yerel örnek"}</p><h1 class="page-title">Fiyatı değil,<br>fikrindeki değişimi izle.</h1><p class="page-copy">Şirket, sektör veya politika tarafında gerçekten önemli bir gelişme olduğunda burada görürsün.</p></div><div class="workspace-status ${live?.status || ""}"><span class="red-signal"></span><strong>${live?.status === "loading" ? "Piyasa verisi alınıyor" : live?.status === "error" ? "Veri alınamadı" : "2 önemli gelişme"}</strong><small>${live?.status === "ready" ? `Son veri · ${live.data.asOf}` : live?.error || "Son bakış · 09:32"}</small></div></header>
+    <header class="workspace-header"><div><p class="eyebrow">Cihan'ın portföy notları · ${live?.status === "ready" ? live.data.provider : "canlı bağlantı bekleniyor"}</p><h1 class="page-title">Fiyatı değil,<br>fikrindeki değişimi izle.</h1><p class="page-copy">Şirket, sektör veya politika tarafında gerçekten önemli bir gelişme olduğunda burada görürsün.</p></div><div class="workspace-status ${live?.status || ""}"><span class="red-signal"></span><strong>${live?.status === "loading" || live?.refreshing ? "Piyasa ve haberler yenileniyor" : live?.status === "error" ? "Veri alınamadı" : `${relevantNews.length} güncel gelişme`}</strong><small>${live?.refreshError ? `Son yenileme başarısız: ${escapeHtml(live.refreshError)} · mevcut veri korunuyor` : live?.status === "ready" ? `Piyasa verisi ${marketTime} · alındı ${fetchedTime}` : live?.error || "Canlı bağlantı başlatılıyor"}</small><button class="button" data-refresh-portfolio ${live?.status === "loading" || live?.refreshing ? "disabled" : ""}>${live?.status === "loading" || live?.refreshing ? "Yenileniyor…" : "Şimdi yenile"}</button></div></header>
     <div class="asset-tabs">${portfolioAssets.map((item) => `<button class="asset-tab ${item.ticker === asset.ticker ? "is-active" : ""}" data-ticker="${item.ticker}"><strong>${item.ticker}</strong><span>${item.price}</span><em class="${item.change.startsWith("-") ? "negative" : ""}">${item.change}</em></button>`).join("")}</div>
-    <div class="portfolio-metrics"><div><span>Gün aralığı</span><strong>${meta.day}</strong></div><div><span>Hacim</span><strong>${meta.volume}</strong></div><div><span>Piyasa değeri</span><strong>${meta.cap}</strong></div><div><span>Tez durumu</span><strong>%${meta.thesisScore}</strong></div><div><span>Risk</span><strong>${meta.risk}</strong></div></div>
+    <div class="portfolio-metrics"><div><span>Gün aralığı</span><strong>${live?.status === "ready" && Number.isFinite(live.data.dayLow) ? `${live.data.dayLow.toLocaleString("tr-TR")}–${live.data.dayHigh.toLocaleString("tr-TR")}` : meta.day}</strong></div><div><span>Hacim</span><strong>${live?.status === "ready" && live.data.volume ? live.data.volume.toLocaleString("tr-TR") : meta.volume}</strong></div><div><span>Piyasa durumu</span><strong>${live?.status === "ready" ? live.data.marketState : "—"}</strong></div><div><span>Tez durumu</span><strong>%${meta.thesisScore}</strong></div><div><span>Risk</span><strong>${meta.risk}</strong></div></div>
     <div class="portfolio-layout"><section class="market-panel modern"><div class="market-top"><div><span>${asset.name}</span><h2>${asset.price} <small>USD</small></h2><em class="${asset.change.startsWith("-") ? "negative" : ""}">${asset.change}</em></div><div class="range-tabs">${["1H", "1A", "6A", "1Y"].map((range) => `<button class="${state.portfolioRange === range ? "is-active" : ""}" data-range="${range}">${range}</button>`).join("")}</div></div><div class="chart-inspection"><div><span>Seçili nokta</span><strong>${state.portfolioPoint + 1}. dönem</strong></div><p>${meta.note}</p></div><div class="price-chart interactive" aria-label="${asset.ticker} fiyat eğilimi">${asset.bars.map((height, index) => `<button style="--height:${height}%" class="${index === state.portfolioPoint ? "current" : ""}" data-portfolio-point="${index}" title="${index + 1}. dönem · ${height}"><i></i></button>`).join("")}</div><div class="chart-axis"><span>Başlangıç</span><span>Bugün</span></div><div class="portfolio-panel-tabs">${[["overview","Özet"],["thesis","Düşüncem"],["risks","Riskler"],["compare","Karşılaştır"]].map(([id,label]) => `<button class="${state.portfolioPanel === id ? "is-active" : ""}" data-portfolio-panel="${id}">${label}</button>`).join("")}</div>${renderPortfolioPanel(asset, meta)}</section>
-      <aside class="portfolio-feed"><p class="section-label">Haberler & gelişmeler</p>${relevantNews.map((news) => `<article class="market-news"><div><span class="red-signal"></span><time>${news.time}</time><em>${news.type}</em></div><h3>${news.title}</h3><p>${news.impact}</p><small>${news.source}</small></article>`).join("")}</aside></div>
+      <aside class="portfolio-feed"><p class="section-label">Gerçek haberler & gelişmeler</p>${relevantNews.length ? relevantNews.map((news) => `<button class="market-news live-news" data-live-url="${escapeHtml(news.url)}"><div><span class="red-signal"></span><time>${news.published ? new Date(news.published).toLocaleString("tr-TR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "Zaman yok"}</time><em>${news.type}</em></div><h3>${escapeHtml(news.title)}</h3><p>Haberi asıl kaynağında açarak ayrıntıyı ve bağlamı doğrula.</p><small>${escapeHtml(news.source)}</small></button>`).join("") : `<div class="live-empty"><strong>${live?.status === "loading" ? "Haberler taranıyor…" : "Bu sembol için yeni haber bulunamadı."}</strong><small>Sonuç yoksa örnek haber göstermiyoruz.</small></div>`}${live?.status === "ready" ? `<small class="freshness-note">${escapeHtml(live.data.freshnessNote)}</small>` : ""}</aside></div>
     ${renderRecommendationEngine("portfolio")}
   </section>`;
 }
@@ -442,18 +445,32 @@ function renderVideoState(job) {
     <section class="transcript-panel"><div class="transcript-head"><div><p class="section-label">Videonun yazılı dökümü</p><h2>${liveTranscriptSegments.length ? "Gerçek altyazı dökümü" : "Enerji, verimlilik ve rebound etkisi"}</h2></div><input id="transcriptSearch" type="search" placeholder="Dökümde ara..."></div><div class="transcript-list">${segments.map((segment) => `<button class="transcript-row" data-transcript-text="${escapeHtml(segment.text.toLocaleLowerCase("tr"))}"><time>${segment.time}</time><span><strong>${segment.speaker}</strong>${segment.text}</span></button>`).join("")}</div><form class="transcript-question" id="transcriptQuestion"><input name="question" value="${escapeHtml(job.question || "")}" required placeholder="Bu video hakkında sor: 'Karşı görüş ne?'"><button aria-label="Sor">→</button></form>${job.answer ? `<div class="video-answer" aria-live="polite"><strong>Kısa yanıt</strong><p>${escapeHtml(job.answer)}</p></div>` : ""}</section></div>`;
 }
 
+function academicItems() { return liveAcademicState.items.length ? liveAcademicState.items : academicPapers; }
 function renderAcademic() {
   const topics = ["AI ekonomisi", "Enerji", "Tarih & güç"];
-  const visible = academicPapers.filter((paper) => paper.topic === state.academicTopic).sort((a, b) => state.academicSort === "newest" ? b.year - a.year : state.academicSort === "citations" ? b.citations - a.citations : academicRelevance(b) - academicRelevance(a));
-  return `<section class="page workspace-page"><header class="workspace-header"><div><p class="eyebrow">İlgilendiğin alanlardan okumalar</p><h1 class="page-title">Önce kaynak,<br>sonra yorum.</h1><p class="page-copy">Makaleyi kim yazmış, nerede yayımlanmış, tam metne erişiliyor mu ve kaynakçada nasıl geçiyor — hepsi aynı yerde.</p></div><div class="workspace-status"><span class="red-signal"></span><strong>${academicPapers.length} yeni makale</strong><small>2 açık erişim · 1 karşı görüş</small></div></header>
+  const papers = academicItems();
+  const visible = [...papers].sort((a, b) => state.academicSort === "newest" ? Number(b.year || 0) - Number(a.year || 0) : state.academicSort === "citations" ? Number(b.citations || 0) - Number(a.citations || 0) : academicRelevance(b) - academicRelevance(a));
+  const updated = liveAcademicState.generatedAt ? new Date(liveAcademicState.generatedAt).toLocaleString("tr-TR", { hour: "2-digit", minute: "2-digit" }) : "henüz yenilenmedi";
+  const openCount = visible.filter((paper) => paper.openAccess || paper.access !== "Özet erişimi").length;
+  return `<section class="page workspace-page"><header class="workspace-header"><div><p class="eyebrow">İlgilendiğin alanlardan gerçek okumalar · ${liveAcademicState.provider || "OpenAlex"}</p><h1 class="page-title">Önce kaynak,<br>sonra yorum.</h1><p class="page-copy">Makaleyi kim yazmış, nerede yayımlanmış, tam metne erişiliyor mu ve kaynakçada nasıl geçiyor — hepsi aynı yerde.</p></div><div class="workspace-status ${liveAcademicState.status}"><span class="red-signal"></span><strong>${liveAcademicState.status === "loading" ? "Makaleler aranıyor" : liveAcademicState.status === "error" ? "Kaynağa ulaşılamadı" : `${visible.length} gerçek makale`}</strong><small>${liveAcademicState.error ? escapeHtml(liveAcademicState.error) : `${openCount} açık erişim · ${updated}`}</small><button class="button" data-refresh-academic ${liveAcademicState.status === "loading" ? "disabled" : ""}>${liveAcademicState.status === "loading" ? "Taranıyor…" : "Yenile"}</button></div></header>
     <div class="academic-toolbar"><div class="topic-pills">${topics.map((topic) => `<button class="${state.academicTopic === topic ? "is-active" : ""}" data-academic-topic="${topic}">${topic}</button>`).join("")}</div><label><span>Sırala</span><select data-academic-sort><option value="relevance" ${state.academicSort === "relevance" ? "selected" : ""}>Konularımla ilgisi</option><option value="newest" ${state.academicSort === "newest" ? "selected" : ""}>Yeni yayınlar</option><option value="citations" ${state.academicSort === "citations" ? "selected" : ""}>Atıf sayısı</option></select></label></div>
-    <div class="academic-layout"><section class="paper-list">${visible.map((paper, index) => `<article class="paper-card"><div class="paper-index">0${index + 1}</div><div><div class="paper-meta"><span>${paper.journal} · ${paper.year}</span><em class="${paper.access === "Özet erişimi" ? "limited" : ""}">${paper.access}</em></div><h2>${paper.title}</h2><p class="authors">${paper.authors}</p><p>${paper.abstract}</p><div class="paper-source"><span>DOI ${paper.doi}</span><span>${paper.citations} atıf</span></div><div class="actions"><button class="button ghost" data-cite-paper="${paper.id}">Kaynakçayı al</button><button class="button" data-paper="${paper.id}">Özeti oku</button><button class="button primary" data-paper="${paper.id}">${paper.access === "Özet erişimi" ? "Erişim bilgisini gör" : "Tam metni aç"}</button></div></div></article>`).join("")}</section><aside class="academic-side"><div class="source-policy"><p class="section-label">Kaynak konusunda açık olalım</p><h3>Erişemediğimiz metni varmış gibi göstermeyiz.</h3><ul><li>Yazar özeti ile yorumumuz ayrı</li><li>DOI ve yayıncı görünür</li><li>Açık erişim bilgisi belirtilir</li><li>Alıntının yeri gösterilir</li></ul></div><div class="citation-vault"><span>Kayıtlı kaynakçalar</span><strong>24</strong><small>konularına bağlı kaynak</small></div></aside></div>
+    <div class="academic-layout"><section class="paper-list">${visible.map((paper, index) => `<article class="paper-card"><div class="paper-index">${String(index + 1).padStart(2, "0")}</div><div><div class="paper-meta"><span>${escapeHtml(paper.journal)} · ${paper.year || "—"}</span><em class="${paper.access === "Özet erişimi" ? "limited" : ""}">${paper.access || (paper.openAccess ? "Açık erişim" : "Özet erişimi")}</em></div><h2>${escapeHtml(paper.title)}</h2><p class="authors">${escapeHtml(Array.isArray(paper.authors) ? paper.authors.join(", ") : paper.authors)}</p><p>${escapeHtml(paper.abstract)}</p><div class="paper-source"><span>${paper.doi ? `DOI ${escapeHtml(paper.doi)}` : "DOI paylaşılmadı"}</span><span>${paper.citations || 0} atıf</span></div><div class="actions"><button class="button ghost" data-cite-paper="${paper.id}">Kaynakçayı al</button><button class="button" data-paper="${paper.id}">Özeti oku</button>${paper.fullTextUrl || paper.url ? `<button class="button primary" data-live-url="${escapeHtml(paper.fullTextUrl || paper.url)}">${paper.fullTextUrl ? "Tam metni aç" : "Yayıncı sayfası"}</button>` : ""}</div></div></article>`).join("")}</section><aside class="academic-side"><div class="source-policy"><p class="section-label">Kaynak konusunda açık olalım</p><h3>Erişemediğimiz metni varmış gibi göstermeyiz.</h3><ul><li>Yazar özeti ile yorumumuz ayrı</li><li>DOI ve yayıncı görünür</li><li>Açık erişim bilgisi belirtilir</li><li>Tam metin yalnızca gerçek bağlantı varsa açılır</li></ul></div><div class="citation-vault"><span>Canlı kaynak</span><strong>${liveAcademicState.provider || "OpenAlex"}</strong><small>son tarama ${updated}</small></div></aside></div>
     ${renderRecommendationEngine("academic")}
   </section>`;
 }
 
-function academicRelevance(paper) { return paper.topic === state.academicTopic ? 100 + (paper.access === "Tam metin" ? 5 : 0) : 0; }
+function academicRelevance(paper) { return paper.openAccess ? 105 : 100; }
 
+async function refreshLiveAcademic() {
+  liveAcademicState = { ...liveAcademicState, status: "loading", items: [], error: "" }; if (route === "academic") render();
+  try {
+    const topicQueries = { "AI ekonomisi": "artificial intelligence economy productivity", "Enerji": "data centers electricity grid energy", "Tarih & güç": "institutions political power history" };
+    const query = topicQueries[state.academicTopic] || state.academicTopic;
+    const data = await apiRequest("/api/academic", { method: "POST", body: JSON.stringify({ query }) });
+    liveAcademicState = { status: "ready", items: data.items || [], error: "", generatedAt: data.generatedAt, provider: data.provider || "OpenAlex" };
+  } catch (error) { liveAcademicState = { ...liveAcademicState, status: "error", error: error.message }; }
+  if (route === "academic") render();
+}
 async function refreshLiveRecommendations() {
   liveRecommendationState = { ...liveRecommendationState, status: "loading", error: "" }; if (route === "recommendations") render();
   try {
@@ -464,8 +481,11 @@ async function refreshLiveRecommendations() {
   if (route === "recommendations") render();
 }
 async function refreshLivePortfolio(ticker) {
-  try { livePortfolio[ticker] = { status: "loading" }; if (route === "portfolio") render(); const data = await apiRequest(`/api/portfolio/${encodeURIComponent(ticker)}`); livePortfolio[ticker] = { status: "ready", data }; }
-  catch (error) { livePortfolio[ticker] = { status: "error", error: error.message }; }
+  const previous = livePortfolio[ticker];
+  livePortfolio[ticker] = previous?.status === "ready" ? { ...previous, refreshing: true, refreshError: "" } : { status: "loading" };
+  if (route === "portfolio") render();
+  try { const data = await apiRequest(`/api/portfolio/${encodeURIComponent(ticker)}`); livePortfolio[ticker] = { status: "ready", data, refreshing: false, refreshError: "" }; }
+  catch (error) { livePortfolio[ticker] = previous?.status === "ready" ? { ...previous, refreshing: false, refreshError: error.message } : { status: "error", error: error.message }; }
   if (route === "portfolio") render();
 }
 async function refreshBackendSchedules() {
@@ -616,14 +636,14 @@ function relativeFeedDate(value) { const hours = Math.max(0, Math.round((Date.no
 
 async function refreshPersonalFeed() {
   personalFeedState = { ...personalFeedState, status: "loading", error: "" };
-  if (route === "feed") render();
+  if (route === "feed" || route === "today") render();
   try {
     const payload = { interests: state.personalFeed.interests, engines: state.personalFeed.engines, sources: state.personalFeed.sources, symbols: state.personalFeed.symbols };
     const data = await apiRequest("/api/feed", { method: "POST", body: JSON.stringify(payload) });
     personalFeedState = { status: "ready", items: data.items || [], errors: data.errors || [], generatedAt: data.generatedAt, activeEngines: data.activeEngines || [], error: "" };
     state.personalFeed.page = 0; persist();
   } catch (error) { personalFeedState = { ...personalFeedState, status: "error", error: error.message }; }
-  if (route === "feed") render();
+  if (route === "feed" || route === "today") render();
 }
 
 function turnFeedPage(nextPage, direction) {
@@ -770,6 +790,7 @@ function bindViewEvents() {
   document.querySelectorAll("[data-feed-page]").forEach((button) => button.addEventListener("click", () => turnFeedPage(state.personalFeed.page + (button.dataset.feedPage === "next" ? 1 : -1), button.dataset.feedPage)));
   document.querySelectorAll("[data-feed-page-index]").forEach((button) => button.addEventListener("click", () => turnFeedPage(Number(button.dataset.feedPageIndex), Number(button.dataset.feedPageIndex) > state.personalFeed.page ? "next" : "prev")));
   document.querySelectorAll("[data-feed-item]").forEach((button) => button.addEventListener("click", () => { const item = [...personalFeedState.items, ...fallbackFeedItems()].find((entry) => entry.id === button.dataset.feedItem); if (item?.url) window.open(item.url, "_blank", "noopener,noreferrer"); }));
+  document.querySelectorAll("[data-live-url]").forEach((button) => button.addEventListener("click", () => window.open(button.dataset.liveUrl, "_blank", "noopener,noreferrer")));
   document.querySelectorAll("[data-feed-engine]").forEach((input) => input.addEventListener("change", () => { state.personalFeed.engines[input.dataset.feedEngine] = input.checked; state.personalFeed.page = 0; persist(); render(); refreshPersonalFeed(); }));
   document.querySelectorAll("[data-feed-interest-toggle]").forEach((button) => button.addEventListener("click", () => { const interest = state.personalFeed.interests.find((item) => item.id === button.dataset.feedInterestToggle); if (!interest) return; interest.active = !interest.active; persist(); render(); refreshPersonalFeed(); }));
   document.querySelectorAll("[data-feed-interest-remove]").forEach((button) => button.addEventListener("click", () => { state.personalFeed.interests = state.personalFeed.interests.filter((item) => item.id !== button.dataset.feedInterestRemove); persist(); render(); refreshPersonalFeed(); }));
@@ -782,7 +803,7 @@ function bindViewEvents() {
   document.querySelectorAll("[data-range]").forEach((button) => button.addEventListener("click", () => { state.portfolioRange = button.dataset.range; persist(); render(); }));
   document.querySelectorAll("[data-portfolio-point]").forEach((button) => button.addEventListener("click", () => { state.portfolioPoint = Number(button.dataset.portfolioPoint); persist(); render(); }));
   document.querySelectorAll("[data-portfolio-panel]").forEach((button) => button.addEventListener("click", () => { state.portfolioPanel = button.dataset.portfolioPanel; persist(); render(); }));
-  document.querySelectorAll("[data-academic-topic]").forEach((button) => button.addEventListener("click", () => { state.academicTopic = button.dataset.academicTopic; persist(); render(); }));
+  document.querySelectorAll("[data-academic-topic]").forEach((button) => button.addEventListener("click", () => { state.academicTopic = button.dataset.academicTopic; persist(); render(); refreshLiveAcademic(); }));
   document.querySelector("[data-academic-sort]")?.addEventListener("change", (event) => { state.academicSort = event.target.value; persist(); render(); showToast("Okumalar yeniden sıralandı"); });
   document.querySelector("#videoIngestForm")?.addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; const url = new FormData(form).get("url").trim(); if (!url || !isYouTubeUrl(url)) { state.videoJob = { ...state.videoJob, status: "error", url, error: !url ? "Önce bir YouTube bağlantısı ekle." : "Bu bir YouTube bağlantısı değil. youtube.com veya youtu.be adresi kullan." }; persist(); render(); return; } state.videoJob = { ...state.videoJob, status: "processing", url, error: "", answer: "", question: "" }; persist(); render(); try { const data = await apiRequest("/api/videos/transcript", { method: "POST", body: JSON.stringify({ url }) }); liveTranscriptSegments = data.segments.map((segment) => ({ time: segment.time, speaker: "Konuşma", text: segment.text })); state.videoJob = { ...state.videoJob, status: "ready", title: `YouTube videosu · ${data.language.toUpperCase()} altyazı` }; persist(); render(); showToast("Gerçek video dökümü hazır"); } catch (error) { state.videoJob = { ...state.videoJob, status: "error", error: error.message }; persist(); render(); } });
   document.querySelectorAll("[data-video-sample]").forEach((button) => button.addEventListener("click", () => setVideoDemo("ready")));
@@ -799,6 +820,8 @@ function bindViewEvents() {
   document.querySelectorAll("[data-rec-page]").forEach((button) => button.addEventListener("click", () => { const count = getRecommendations().length; state.recommendationIndex = button.dataset.recPage === "next" ? Math.min(count - 1, state.recommendationIndex + 1) : Math.max(0, state.recommendationIndex - 1); persist(); render(); }));
   document.querySelectorAll("[data-rec-decision]").forEach((button) => button.addEventListener("click", () => saveActiveRecommendation(button.dataset.recDecision)));
   document.querySelector("[data-refresh-recommendations]")?.addEventListener("click", refreshLiveRecommendations);
+  document.querySelector("[data-refresh-academic]")?.addEventListener("click", refreshLiveAcademic);
+  document.querySelector("[data-refresh-portfolio]")?.addEventListener("click", () => refreshLivePortfolio(state.activeTicker));
   document.querySelectorAll("[data-paper]").forEach((button) => button.addEventListener("click", () => openPaper(button.dataset.paper)));
   document.querySelectorAll("[data-cite-paper]").forEach((button) => button.addEventListener("click", () => openCitation(button.dataset.citePaper)));
   document.querySelectorAll("[data-mode]").forEach((button) => button.addEventListener("click", () => { state.mode = button.dataset.mode; persist(); render(); showToast(`Mod: ${button.textContent}`); }));
@@ -851,16 +874,19 @@ function applyDecision(id, decision) {
 }
 
 function openPaper(id) {
-  const paper = academicPapers.find((item) => item.id === id); if (!paper) return;
-  showModal(`<article class="paper-reader"><div class="reader-head"><div><p class="eyebrow">${paper.journal} · ${paper.year} · ${paper.access}</p><h2>${paper.title}</h2><p>${paper.authors}</p></div><div class="trust-stamp"><span>Atıf</span><strong>${paper.citations}</strong><small>DOI görünür</small></div></div><div class="reader-layout"><section><p class="section-label">Özet</p><p class="deep-summary">${paper.abstract}</p><p class="section-label">Tam içerik / erişilebilir bölüm</p><p class="paper-fulltext">${paper.fullText}</p><div class="access-notice ${paper.access === "Özet erişimi" ? "limited" : ""}"><strong>${paper.access === "Özet erişimi" ? "Yayıncı erişimi gerekli" : "Tam metin erişilebilir"}</strong><span>${paper.access === "Özet erişimi" ? "Sistem yalnızca doğrulayabildiği özeti gösteriyor." : "Bu prototipte doğrulanmış içerik önizlemesi gösteriliyor."}</span></div></section><aside><p class="section-label">Kaynak bilgisi</p><dl><dt>DOI</dt><dd>${paper.doi}</dd><dt>Dergi</dt><dd>${paper.journal}</dd><dt>Yazarlar</dt><dd>${paper.authors}</dd><dt>Erişim</dt><dd>${paper.access}</dd></dl><button class="button" data-copy-citation="${paper.id}">Kaynakçayı kopyala</button></aside></div></article>`);
+  const paper = academicItems().find((item) => item.id === id); if (!paper) return;
+  const authors = Array.isArray(paper.authors) ? paper.authors.join(", ") : paper.authors;
+  const accessUrl = paper.fullTextUrl || paper.url || (paper.doi ? `https://doi.org/${paper.doi}` : "");
+  const fullText = paper.fullText || "Tam metni uygulama içine kopyalamıyoruz. Erişim varsa aşağıdaki doğrulanmış kaynak bağlantısından açabilirsin.";
+  showModal(`<article class="paper-reader"><div class="reader-head"><div><p class="eyebrow">${escapeHtml(paper.journal)} · ${paper.year || "—"} · ${paper.access}</p><h2>${escapeHtml(paper.title)}</h2><p>${escapeHtml(authors)}</p></div><div class="trust-stamp"><span>Atıf</span><strong>${paper.citations || 0}</strong><small>${paper.doi ? "DOI görünür" : "DOI yok"}</small></div></div><div class="reader-layout"><section><p class="section-label">Sağlayıcının özeti</p><p class="deep-summary">${escapeHtml(paper.abstract)}</p><p class="section-label">Tam içerik durumu</p><p class="paper-fulltext">${escapeHtml(fullText)}</p><div class="access-notice ${paper.access === "Özet erişimi" ? "limited" : ""}"><strong>${paper.fullTextUrl ? "Açık tam metin bağlantısı bulundu" : "Yayıncı sayfası / özet erişimi"}</strong><span>${paper.fullTextUrl ? "Bağlantı OpenAlex erişim kaydından geliyor." : "Erişemediğimiz metni varmış gibi göstermiyoruz."}</span></div>${accessUrl ? `<a class="button primary" href="${escapeHtml(accessUrl)}" target="_blank" rel="noopener noreferrer">${paper.fullTextUrl ? "Tam metni aç →" : "Kaynak sayfasını aç →"}</a>` : ""}</section><aside><p class="section-label">Kaynak bilgisi</p><dl><dt>DOI</dt><dd>${escapeHtml(paper.doi || "Paylaşılmadı")}</dd><dt>Dergi</dt><dd>${escapeHtml(paper.journal)}</dd><dt>Yazarlar</dt><dd>${escapeHtml(authors)}</dd><dt>Erişim</dt><dd>${paper.access}</dd></dl><button class="button" data-copy-citation="${paper.id}">Kaynakçayı kopyala</button></aside></div></article>`);
   modalRoot.querySelector("[data-copy-citation]")?.addEventListener("click", () => { navigator.clipboard?.writeText(citationFor(paper)); showToast("Kaynakça kopyalandı"); });
 }
 function openCitation(id) {
-  const paper = academicPapers.find((item) => item.id === id); if (!paper) return;
+  const paper = academicItems().find((item) => item.id === id); if (!paper) return;
   showModal(`<div class="modal-form compact"><p class="eyebrow">Kaynakça</p><h2>Doğrulanabilir künye</h2><div class="citation-card"><span>APA 7</span><p>${citationFor(paper)}</p></div><div class="citation-card"><span>DOI</span><p>${paper.doi}</p></div><button class="button primary" data-copy-citation="${paper.id}">Kaynakçayı kopyala</button></div>`);
   modalRoot.querySelector("[data-copy-citation]")?.addEventListener("click", () => { navigator.clipboard?.writeText(citationFor(paper)); showToast("Kaynakça kopyalandı"); });
 }
-function citationFor(paper) { return `${paper.authors} (${paper.year}). ${paper.title}. ${paper.journal}. https://doi.org/${paper.doi}`; }
+function citationFor(paper) { const authors = Array.isArray(paper.authors) ? paper.authors.join(", ") : paper.authors; return `${authors || "Yazar bilgisi yok"} (${paper.year || "t.y."}). ${paper.title}. ${paper.journal}.${paper.doi ? ` https://doi.org/${paper.doi}` : ""}`; }
 
 function openContent(id) {
   const item = itemById(id); if (!item) return;
@@ -957,8 +983,22 @@ document.querySelector("#searchButton").addEventListener("click", openPalette);
 document.querySelector("#profileButton").addEventListener("click", () => setRoute("profile"));
 document.querySelector("[data-close-palette]").addEventListener("click", closePalette);
 document.querySelector("#globalSearch").addEventListener("input", (event) => renderSearchResults(event.target.value));
-window.addEventListener("hashchange", () => { const next = location.hash.slice(1); if (next && next !== route) { route = next; render(); } });
+window.addEventListener("hashchange", () => { const next = location.hash.slice(1); if (next && next !== route) setRoute(next); });
 document.addEventListener("keydown", (event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openPalette(); } if (event.key === "Escape") { closePalette(); closeModal(); } });
+
+const liveRefreshTimer = window.setInterval(() => {
+  if (document.visibilityState !== "visible") return;
+  if (route === "portfolio") refreshLivePortfolio(state.activeTicker);
+  if ((route === "feed" || route === "today") && personalFeedState.status !== "loading" && Date.now() - Date.parse(personalFeedState.generatedAt || 0) > 300_000) refreshPersonalFeed();
+  if (route === "academic" && liveAcademicState.status !== "loading" && Date.now() - Date.parse(liveAcademicState.generatedAt || 0) > 900_000) refreshLiveAcademic();
+}, 60_000);
+window.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (route === "portfolio") refreshLivePortfolio(state.activeTicker);
+  if ((route === "feed" || route === "today") && personalFeedState.status === "idle") refreshPersonalFeed();
+  if (route === "academic" && liveAcademicState.status === "idle") refreshLiveAcademic();
+});
+window.addEventListener("pagehide", () => window.clearInterval(liveRefreshTimer), { once: true });
 
 setRoute(route);
 hydrateCloudState();

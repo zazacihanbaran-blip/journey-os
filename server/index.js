@@ -82,6 +82,24 @@ async function searchCrossref(query, limit = 6) {
   const data = await fetchJson(`https://api.crossref.org/works?query=${encodeURIComponent(query)}&filter=from-pub-date:2022-01-01&rows=${limit}&select=DOI,title,author,published,container-title,is-referenced-by-count,URL,abstract`);
   return (data.message?.items || []).map((work) => ({ id: work.DOI, type: "Akademik kayıt", format: "Makale", source: work["container-title"]?.[0] || "Crossref", title: work.title?.[0] || work.DOI, url: work.URL, published: work.published?.["date-parts"]?.[0]?.join("-") || "", citations: work["is-referenced-by-count"] || 0, openAccess: false, summary: String(work.abstract || "Kaynak künyesi doğrulandı; özet paylaşılmadı.").replace(/<[^>]+>/g, " ").slice(0, 900), trust: 90, novelty: freshness(work.published?.["date-parts"]?.[0]?.[0]) }));
 }
+async function searchAcademicDetailed(query, limit = 18) {
+  const mail = process.env.OPENALEX_EMAIL ? `&mailto=${encodeURIComponent(process.env.OPENALEX_EMAIL)}` : "";
+  const data = await fetchJson(`https://api.openalex.org/works?search=${encodeURIComponent(query)}&filter=from_publication_date:2022-01-01&sort=relevance_score:desc&per-page=${limit}${mail}`);
+  return (data.results || []).map((work) => {
+    const location = work.best_oa_location || work.primary_location || {};
+    return {
+      id: work.id, title: work.display_name,
+      authors: (work.authorships || []).slice(0, 8).map((entry) => entry.author?.display_name).filter(Boolean),
+      journal: location.source?.display_name || work.primary_location?.source?.display_name || "OpenAlex",
+      year: work.publication_year, published: work.publication_date,
+      doi: String(work.doi || "").replace(/^https?:\/\/doi\.org\//i, ""), citations: work.cited_by_count || 0,
+      abstract: work.abstract_inverted_index ? abstractFromIndex(work.abstract_inverted_index) : "Sağlayıcı bu çalışma için özet paylaşmadı.",
+      openAccess: Boolean(work.open_access?.is_oa), access: work.open_access?.is_oa ? "Açık erişim" : "Özet erişimi",
+      url: work.doi || location.landing_page_url || work.id,
+      fullTextUrl: work.best_oa_location?.pdf_url || (work.open_access?.is_oa ? location.landing_page_url : "")
+    };
+  });
+}
 async function buildRecommendations({ query = "artificial intelligence economy energy", settings = {} }) {
   const outcomes = await Promise.allSettled([searchAcademic(query), searchCrossref(query)]);
   const items = outcomes.flatMap((outcome) => outcome.status === "fulfilled" ? outcome.value : []);
@@ -92,13 +110,29 @@ async function buildRecommendations({ query = "artificial intelligence economy e
 }
 
 async function getPortfolio(symbol) {
-  const data = await fetchJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol.toUpperCase())}?range=6mo&interval=1d`);
+  const normalizedSymbol = symbol.toUpperCase();
+  const [chartResult, newsResult] = await Promise.allSettled([
+    fetchJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(normalizedSymbol)}?range=6mo&interval=1d`),
+    fetchJson(`https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(normalizedSymbol)}&newsCount=10&quotesCount=1`)
+  ]);
+  if (chartResult.status === "rejected") throw chartResult.reason;
+  const data = chartResult.value;
   const chart = data.chart?.result?.[0]; if (!chart) throw new Error(data.chart?.error?.description || "Piyasa verisi bulunamadı");
   const quote = chart.indicators?.quote?.[0] || {}; const closes = chart.indicators?.adjclose?.[0]?.adjclose || quote.close || [];
   const points = (chart.timestamp || []).map((timestamp, index) => ({ date: new Date(timestamp * 1000).toISOString().slice(0, 10), open: quote.open?.[index], high: quote.high?.[index], low: quote.low?.[index], close: closes[index], volume: quote.volume?.[index] })).filter((point) => Number.isFinite(point.close));
   const latest = points.at(-1); const previous = points.at(-2) || latest; if (!latest) throw new Error("Piyasa verisi boş döndü");
   const change = ((latest.close - previous.close) / previous.close) * 100;
-  return { symbol: symbol.toUpperCase(), price: chart.meta?.regularMarketPrice || latest.close, change, currency: chart.meta?.currency || "USD", asOf: latest.date, volume: latest.volume, points: points.slice(-120), provider: "Yahoo Finance" };
+  const news = newsResult.status === "fulfilled" ? (newsResult.value.news || []).slice(0, 8).map((item) => ({ id: item.uuid || item.link, title: item.title, source: item.publisher || "Yahoo Finance", url: item.link, published: item.providerPublishTime ? new Date(item.providerPublishTime * 1000).toISOString() : "", type: "ŞİRKET / PİYASA" })) : [];
+  const quoteMeta = newsResult.status === "fulfilled" ? newsResult.value.quotes?.[0] || {} : {};
+  return {
+    symbol: normalizedSymbol, name: quoteMeta.longname || quoteMeta.shortname || chart.meta?.longName || chart.meta?.shortName || normalizedSymbol,
+    price: chart.meta?.regularMarketPrice || latest.close, change, currency: chart.meta?.currency || "USD",
+    asOf: chart.meta?.regularMarketTime ? new Date(chart.meta.regularMarketTime * 1000).toISOString() : `${latest.date}T00:00:00.000Z`,
+    fetchedAt: new Date().toISOString(), marketState: quoteMeta.marketState || chart.meta?.marketState || "UNKNOWN", exchange: quoteMeta.exchange || chart.meta?.exchangeName || "",
+    dayLow: quoteMeta.regularMarketDayLow || chart.meta?.regularMarketDayLow, dayHigh: quoteMeta.regularMarketDayHigh || chart.meta?.regularMarketDayHigh, volume: quoteMeta.regularMarketVolume || chart.meta?.regularMarketVolume || latest.volume,
+    points: points.slice(-120), news, provider: "Yahoo Finance",
+    freshnessNote: "Ücretsiz sağlayıcının son piyasa verisi; borsa gerçek zamanı garantisi değildir."
+  };
 }
 
 function videoIdFromUrl(value) {
@@ -138,6 +172,10 @@ async function handleApi(request, response, url) {
   }
   if (request.method === "POST" && url.pathname === "/api/recommendations") {
     try { const input = await bodyJson(request); return json(response, 200, { items: await buildRecommendations(input), generatedAt: new Date().toISOString(), providers: ["OpenAlex", "Crossref"] }); } catch (error) { return json(response, 502, { error: error.message }); }
+  }
+  if (request.method === "POST" && url.pathname === "/api/academic") {
+    try { const input = await bodyJson(request); return json(response, 200, { items: await searchAcademicDetailed(input.query || "artificial intelligence economy"), generatedAt: new Date().toISOString(), provider: "OpenAlex" }); }
+    catch (error) { return json(response, 502, { error: error.message }); }
   }
   if (request.method === "POST" && url.pathname === "/api/feed") {
     try { const input = await bodyJson(request); return json(response, 200, await buildPersonalFeed(input)); }
