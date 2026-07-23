@@ -136,21 +136,23 @@ async function academic(input: Record<string, any>) {
   });
   return { items, generatedAt: new Date().toISOString(), provider: "OpenAlex" };
 }
-async function portfolio(symbol: string) {
+async function portfolio(symbol: string, requestedRange = "6A") {
   const normalizedSymbol = symbol.toUpperCase();
+  const ranges: Record<string, [string, string]> = { "1H": ["5d", "15m"], "1A": ["1mo", "1d"], "6A": ["6mo", "1d"], "1Y": ["1y", "1d"] };
+  const [range, interval] = ranges[requestedRange] || ranges["6A"];
   const [chartResult, newsResult] = await Promise.allSettled([
-    getJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(normalizedSymbol)}?range=6mo&interval=1d`),
+    getJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(normalizedSymbol)}?range=${range}&interval=${interval}`),
     getJson(`https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(normalizedSymbol)}&newsCount=10&quotesCount=1`),
   ]);
   if (chartResult.status === "rejected") throw chartResult.reason;
   const data = chartResult.value;
   const chart = data.chart?.result?.[0]; if (!chart) throw new Error(data.chart?.error?.description || "Piyasa verisi bulunamadı");
   const quote = chart.indicators?.quote?.[0] || {}; const closes = chart.indicators?.adjclose?.[0]?.adjclose || quote.close || [];
-  const points = (chart.timestamp || []).map((time: number, i: number) => ({ date: new Date(time * 1000).toISOString().slice(0, 10), open: quote.open?.[i], high: quote.high?.[i], low: quote.low?.[i], close: closes[i], volume: quote.volume?.[i] })).filter((p: any) => Number.isFinite(p.close));
+  const points = (chart.timestamp || []).map((time: number, i: number) => ({ date: new Date(time * 1000).toISOString(), open: quote.open?.[i], high: quote.high?.[i], low: quote.low?.[i], close: closes[i], volume: quote.volume?.[i] })).filter((p: any) => Number.isFinite(p.close));
   const latest = points.at(-1); const previous = points.at(-2) || latest; if (!latest) throw new Error("Piyasa verisi boş döndü");
   const news = newsResult.status === "fulfilled" ? await Promise.all((newsResult.value.news || []).slice(0, 8).map(async (item: any) => ({ id: await stableId(item.uuid || item.link || item.title), title: clean(item.title), source: item.publisher || "Yahoo Finance", url: item.link, published: item.providerPublishTime ? new Date(item.providerPublishTime * 1000).toISOString() : "", type: "ŞİRKET / PİYASA" }))) : [];
   const quoteMeta = newsResult.status === "fulfilled" ? newsResult.value.quotes?.[0] || {} : {};
-  const marketTimestamp = chart.meta?.regularMarketTime ? new Date(chart.meta.regularMarketTime * 1000).toISOString() : `${latest.date}T00:00:00.000Z`;
+  const marketTimestamp = chart.meta?.regularMarketTime ? new Date(chart.meta.regularMarketTime * 1000).toISOString() : latest.date;
   return {
     symbol: normalizedSymbol, name: quoteMeta.longname || quoteMeta.shortname || chart.meta?.longName || chart.meta?.shortName || normalizedSymbol,
     price: chart.meta?.regularMarketPrice || latest.close,
@@ -158,7 +160,7 @@ async function portfolio(symbol: string) {
     currency: chart.meta?.currency || "USD", asOf: marketTimestamp, fetchedAt: new Date().toISOString(),
     marketState: quoteMeta.marketState || chart.meta?.marketState || "UNKNOWN", exchange: quoteMeta.exchange || chart.meta?.exchangeName || "",
     dayLow: quoteMeta.regularMarketDayLow || chart.meta?.regularMarketDayLow, dayHigh: quoteMeta.regularMarketDayHigh || chart.meta?.regularMarketDayHigh,
-    volume: quoteMeta.regularMarketVolume || chart.meta?.regularMarketVolume || latest.volume, points: points.slice(-120), news,
+    volume: quoteMeta.regularMarketVolume || chart.meta?.regularMarketVolume || latest.volume, points: points.slice(-260), news,
     provider: "Yahoo Finance",
     freshnessNote: "Ücretsiz sağlayıcının son piyasa verisi; borsa gerçek zamanı garantisi değildir.",
   };
@@ -185,7 +187,7 @@ Deno.serve(async (request) => {
     if (path === "/feed" && request.method === "POST") return json(await feed(body));
     if (path === "/recommendations" && request.method === "POST") return json(await recommendations(body));
     if (path === "/academic" && request.method === "POST") return json(await academic(body));
-    if (path.startsWith("/portfolio/") && request.method === "GET") return json(await portfolio(path.split("/").at(-1)!));
+    if (path.startsWith("/portfolio/") && request.method === "GET") return json(await portfolio(path.split("/").at(-1)!, url.searchParams.get("range") || "6A"));
     if (path === "/videos/transcript" && request.method === "POST") return json(await transcript(body.url));
     if (path === "/schedules" && request.method === "GET") { const [schedules, reports] = await Promise.all([client.from("research_schedules").select("*").order("created_at", { ascending: false }), client.from("research_reports").select("*").order("created_at", { ascending: false }).limit(20)]); if (schedules.error) throw schedules.error; if (reports.error) throw reports.error; return json({ schedules: schedules.data, reports: (reports.data || []).map((r: any) => ({ ...r, createdAt: r.created_at, count: r.items?.length || 0 })) }); }
     if (path === "/schedules" && request.method === "POST") { const hours = body.frequency === "hourly" ? 1 : body.frequency === "weekly" ? 168 : 24; const { data, error } = await client.from("research_schedules").insert({ user_id: user.id, title: body.title, topic: body.topic || "", frequency: body.frequency || "daily", delivery_time: body.time || null, channel: body.channel || "Uygulama", settings: body.settings || {}, next_run: new Date(Date.now() + hours * 3600000).toISOString() }).select().single(); if (error) throw error; return json(data, 201); }
