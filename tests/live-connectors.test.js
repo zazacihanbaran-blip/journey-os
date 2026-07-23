@@ -25,3 +25,21 @@ test("canlı piyasa geçmişini getirir", { skip: !live }, async () => {
   assert.ok(data.price > 0);
   assert.ok(data.points.length > 20);
 });
+test("canlı akış motorlarının her biri gerçek içerik üretir", { skip: !live }, async () => {
+  const response = await fetch(`${base}/api/feed`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      interests: [{ label: "artificial intelligence economy", keywords: ["AI", "energy"], intensity: 5, active: true }],
+      symbols: ["NVDA"],
+      sources: [],
+      engines: { news: true, finance: true, academic: true, youtube: true, rss: true, hackernews: true, social: false },
+    }),
+  });
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  for (const engine of ["news", "finance", "academic", "youtube", "rss", "hackernews"]) {
+    assert.equal(data.engineStatuses.find((entry) => entry.engine === engine)?.status, "ready", `${engine} hazır olmalı`);
+    assert.ok(data.items.some((item) => item.engine === engine), `${engine} baskıda görünmeli`);
+  }
+});
